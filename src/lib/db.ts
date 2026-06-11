@@ -417,6 +417,11 @@ export const capturesRepo = {
     return rows[0] || null;
   },
 
+  async remove(id: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM captures WHERE id = $1", [id]);
+  },
+
   async insert(capture: {
     app_name: string;
     window_title: string | null;
