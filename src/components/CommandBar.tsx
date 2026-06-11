@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "lucide-react";
-import { activityRepo, capturesRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
-import { ollamaClient, cosineSimilarity } from "../lib/ollama";
+import { activityRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
+import { ollamaClient } from "../lib/ollama";
+import { retrieveRelevantCaptures } from "../lib/retrieval";
 
 interface SourceReference {
   app_name: string;
@@ -223,8 +224,6 @@ export const CommandBar: React.FC = () => {
         return;
       }
 
-      const embeddingModel = await settingsRepo.getEmbeddingModel();
-
       // Gather today's stats, top apps, timeline, goals, and notes
       const [stats, topApps, timeline, dailyGoal, notes] = await Promise.all([
         activityRepo.todayStats(),
@@ -234,41 +233,9 @@ export const CommandBar: React.FC = () => {
         notesRepo.list(),
       ]);
 
-      // Retrieve captures relevant to the query (Semantic or LIKE)
-      let relevantCaptures: any[] = [];
-      const embeddingModelAvailable = installed.includes(embeddingModel) || installed.includes(`${embeddingModel}:latest`);
-
-      if (embeddingModelAvailable) {
-        try {
-          const queryVector = await ollamaClient.generateEmbedding(query, embeddingModel);
-          const allCaptures = await capturesRepo.list();
-          
-          const ranked = allCaptures
-            .map((c) => {
-              if (!c.embedding) return { capture: c, similarity: -1 };
-              try {
-                const vector = JSON.parse(c.embedding);
-                const sim = cosineSimilarity(queryVector, vector);
-                return { capture: c, similarity: sim };
-              } catch (e) {
-                return { capture: c, similarity: -1 };
-              }
-            })
-            .filter((item) => item.similarity > 0.15)
-            .sort((a, b) => b.similarity - a.similarity)
-            .slice(0, 5);
-
-          relevantCaptures = ranked.map((item) => item.capture);
-        } catch (err) {
-          console.error("Semantic query failed in Ask Bar:", err);
-        }
-      }
-
-      if (relevantCaptures.length === 0) {
-        // Fallback to SQL LIKE search
-        relevantCaptures = await capturesRepo.list(query);
-        relevantCaptures = relevantCaptures.slice(0, 5);
-      }
+      // Retrieve captures relevant to the query (semantic with LIKE fallback;
+      // shared with the Researcher agent, always on-device)
+      const relevantCaptures = await retrieveRelevantCaptures(query);
 
       // Update references / sources on entry
       setHistory((prev) =>

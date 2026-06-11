@@ -4,6 +4,7 @@ import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./components/Dashboard";
 import { Knowledge } from "./components/Knowledge";
 import { Settings } from "./components/Settings";
+import { Agents } from "./components/Agents";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
@@ -106,6 +107,13 @@ function App() {
     initDb();
   }, []);
 
+  // Clicking an agent on the Dashboard card switches to the Agents view
+  useEffect(() => {
+    const openAgents = () => setCurrentView("Agents");
+    window.addEventListener("vera-open-agent", openAgents);
+    return () => window.removeEventListener("vera-open-agent", openAgents);
+  }, []);
+
   // Set up activity segment event listener and auto-refresh intervals
   useEffect(() => {
     let unlistenActivity: (() => void) | null = null;
@@ -188,6 +196,8 @@ function App() {
           {dbReady ? (
             currentView === "Dashboard" ? (
               <Dashboard />
+            ) : currentView === "Agents" ? (
+              <Agents />
             ) : currentView === "Knowledge" ? (
               <Knowledge />
             ) : currentView === "Settings" ? (

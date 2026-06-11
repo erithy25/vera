@@ -1,5 +1,6 @@
 import React from "react";
 import { agents } from "../lib/config";
+import { requestOpenAgent, AgentId } from "../lib/agents";
 
 export const AgentsCard: React.FC = () => {
   return (
@@ -19,6 +20,7 @@ export const AgentsCard: React.FC = () => {
         {agents.map((agent) => (
           <div
             key={agent.name}
+            onClick={() => requestOpenAgent(agent.name.toLowerCase() as AgentId)}
             className="flex items-center gap-3 p-1 rounded-xl hover:bg-active-hover/40 transition-all duration-150 active:scale-[0.98] active:bg-active-hover/60 select-none cursor-pointer"
           >
             {/* Avatar */}

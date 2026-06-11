@@ -106,17 +106,17 @@ export const notesRepo = {
     return db.select<DbNote[]>("SELECT * FROM notes ORDER BY created_at DESC");
   },
 
-  async add(title: string): Promise<DbNote> {
+  async add(title: string, body: string = ""): Promise<DbNote> {
     const db = await getDb();
     const now = Date.now();
     const result = await db.execute(
       "INSERT INTO notes (title, body, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-      [title, "", now, now]
+      [title, body, now, now]
     );
     return {
       id: result.lastInsertId!,
       title,
-      body: "",
+      body,
       created_at: now,
       updated_at: now,
     };
@@ -143,6 +143,21 @@ export const goalsRepo = {
       "SELECT * FROM goals ORDER BY created_at DESC LIMIT 1"
     );
     return rows[0] || null;
+  },
+
+  async add(title: string, targetMinutes: number = 60): Promise<DbGoal> {
+    const db = await getDb();
+    const now = Date.now();
+    const result = await db.execute(
+      "INSERT INTO goals (title, target_minutes, created_at) VALUES ($1, $2, $3)",
+      [title, targetMinutes, now]
+    );
+    return {
+      id: result.lastInsertId!,
+      title,
+      target_minutes: targetMinutes,
+      created_at: now,
+    };
   },
 };
 

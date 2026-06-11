@@ -91,6 +91,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, d
       }
     }
     fetchNotes();
+
+    // Refresh when an approved agent action (or any other path) adds a note
+    const onNotesUpdated = () => fetchNotes();
+    window.addEventListener("notes-updated", onNotesUpdated);
+    return () => window.removeEventListener("notes-updated", onNotesUpdated);
   }, [dbReady]);
 
   const getRelativeTime = (createdAt: Date) => {
