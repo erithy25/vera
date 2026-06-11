@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./components/Dashboard";
@@ -7,6 +7,7 @@ import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
 import { Goals } from "./components/Goals";
 import { Onboarding } from "./components/Onboarding";
+import { LockScreen } from "./components/LockScreen";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
@@ -91,6 +92,8 @@ function App() {
   const [currentView, setCurrentView] = useState<string>("Dashboard");
   const [dbReady, setDbReady] = useState<boolean>(false);
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
+  const [locked, setLocked] = useState<boolean>(false);
+  const appLockEnabledRef = useRef<boolean>(false);
 
   useEffect(() => {
     async function initDb() {
@@ -102,6 +105,14 @@ function App() {
           setOnboardingComplete(await settingsRepo.getOnboardingComplete());
         } catch (err) {
           console.error("Failed to read onboarding flag:", err);
+        }
+        try {
+          // App lock: when enabled, every cold launch starts locked
+          const lockEnabled = await settingsRepo.getAppLockEnabled();
+          appLockEnabledRef.current = lockEnabled;
+          setLocked(lockEnabled);
+        } catch (err) {
+          console.error("Failed to read app lock flag:", err);
         }
         setDbReady(true);
         // Run embedding backfill in background
@@ -120,6 +131,44 @@ function App() {
     const onReset = () => setOnboardingComplete(false);
     window.addEventListener("onboarding-reset", onReset);
     return () => window.removeEventListener("onboarding-reset", onReset);
+  }, []);
+
+  // App lock: track the toggle and re-lock on hide/minimize and on Mac
+  // lock/sleep (via the native screen-locked event). A plain focus change
+  // keeps the window visible, so visibilitychange does not fire for it.
+  useEffect(() => {
+    const onAppLockUpdated = async () => {
+      try {
+        appLockEnabledRef.current = await settingsRepo.getAppLockEnabled();
+      } catch (err) {
+        console.error("Failed to reload app lock flag:", err);
+      }
+    };
+    window.addEventListener("app-lock-updated", onAppLockUpdated);
+
+    const onVisibilityChange = () => {
+      if (document.hidden && appLockEnabledRef.current) {
+        setLocked(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    let unlistenScreenLock: (() => void) | null = null;
+    listen("screen-locked", () => {
+      if (appLockEnabledRef.current) {
+        setLocked(true);
+      }
+    })
+      .then((unlisten) => {
+        unlistenScreenLock = unlisten;
+      })
+      .catch((err) => console.error("Failed to listen for screen-locked:", err));
+
+    return () => {
+      window.removeEventListener("app-lock-updated", onAppLockUpdated);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (unlistenScreenLock) unlistenScreenLock();
+    };
   }, []);
 
   // Clicking an agent on the Dashboard card switches to the Agents view
@@ -194,7 +243,12 @@ function App() {
 
   // First-run onboarding takes over the whole window until completed
   if (dbReady && onboardingComplete === false) {
-    return <Onboarding onComplete={() => setOnboardingComplete(true)} />;
+    return (
+      <>
+        <Onboarding onComplete={() => setOnboardingComplete(true)} />
+        {locked && <LockScreen onUnlock={() => setLocked(false)} />}
+      </>
+    );
   }
 
   return (
@@ -236,6 +290,9 @@ function App() {
           )}
         </main>
       </div>
+
+      {/* Optional app lock overlay — opaque, covers everything */}
+      {locked && <LockScreen onUnlock={() => setLocked(false)} />}
     </div>
   );
 }

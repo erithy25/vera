@@ -31,6 +31,10 @@ extern "C" {
     fn ffi_check_screen_recording_permission() -> bool;
     #[link_name = "request_screen_recording_permission"]
     fn ffi_request_screen_recording_permission() -> bool;
+    #[link_name = "can_authenticate_app_lock"]
+    fn ffi_can_authenticate_app_lock() -> bool;
+    #[link_name = "authenticate_app_lock"]
+    fn ffi_authenticate_app_lock(reason: *const c_char) -> i32;
 }
 
 #[derive(Clone, Serialize)]
@@ -204,6 +208,41 @@ fn has_screen_recording_permission() -> bool {
 #[tauri::command]
 fn request_screen_recording_permission() -> bool {
     unsafe { ffi_request_screen_recording_permission() }
+}
+
+#[derive(Clone, Serialize)]
+struct AppLockAuthResult {
+    success: bool,
+    available: bool,
+}
+
+#[tauri::command]
+fn can_use_app_lock() -> bool {
+    unsafe { ffi_can_authenticate_app_lock() }
+}
+
+/// Run macOS LocalAuthentication (Touch ID with Mac-password fallback).
+/// Blocks a worker thread, never the main thread. No secret is stored or
+/// checked by Vera itself.
+#[tauri::command]
+async fn authenticate_app_lock(reason: Option<String>) -> Result<AppLockAuthResult, String> {
+    let reason_text = reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| "Unlock Vera".to_string());
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let c_reason = std::ffi::CString::new(reason_text).unwrap_or_default();
+        unsafe { ffi_authenticate_app_lock(c_reason.as_ptr()) }
+    })
+    .await
+    .map_err(|e| format!("Authentication task failed: {}", e))?;
+
+    Ok(match outcome {
+        1 => AppLockAuthResult { success: true, available: true },
+        0 => AppLockAuthResult { success: false, available: true },
+        _ => AppLockAuthResult { success: false, available: false },
+    })
 }
 
 /// Open the matching macOS System Settings privacy pane.
@@ -774,6 +813,8 @@ pub fn run() {
       has_screen_recording_permission,
       request_screen_recording_permission,
       open_privacy_settings,
+      can_use_app_lock,
+      authenticate_app_lock,
       set_capture_paused,
       is_capture_paused,
       update_privacy_settings,
@@ -839,6 +880,7 @@ pub fn run() {
           let mut current_window: Option<String> = None;
           let mut current_start_time: Option<u64> = None;
           let mut last_flush_time = Instant::now();
+          let mut was_screen_locked = false;
 
           loop {
               thread_loop_tick(
@@ -846,7 +888,8 @@ pub fn run() {
                   &mut current_app,
                   &mut current_window,
                   &mut current_start_time,
-                  &mut last_flush_time
+                  &mut last_flush_time,
+                  &mut was_screen_locked
               );
               std::thread::sleep(Duration::from_secs(3));
           }
@@ -1052,7 +1095,8 @@ fn thread_loop_tick(
     current_app: &mut Option<String>,
     current_window: &mut Option<String>,
     current_start_time: &mut Option<u64>,
-    last_flush_time: &mut Instant
+    last_flush_time: &mut Instant,
+    was_screen_locked: &mut bool
 ) {
     let now_epoch_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1090,6 +1134,11 @@ fn thread_loop_tick(
     // Screen is locked — locked time never counts as activity.
     // Close any open session and record nothing until unlock.
     if unsafe { ffi_is_screen_locked() } {
+        // Notify the frontend once per lock (used by the optional app lock)
+        if !*was_screen_locked {
+            *was_screen_locked = true;
+            let _ = app_handle.emit("screen-locked", true);
+        }
         if let Some(app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
@@ -1108,6 +1157,7 @@ fn thread_loop_tick(
         }
         return;
     }
+    *was_screen_locked = false;
 
     // Query active app
     let activity = unsafe { get_active_app_activity() };
