@@ -146,6 +146,24 @@ export const goalsRepo = {
   },
 };
 
+// System UI processes (lock screen, screensaver, ...) that must never count as activity
+const SYSTEM_PROCESS_NAMES = [
+  "loginwindow",
+  "windowserver",
+  "window server",
+  "screensaverengine",
+  "screensaver",
+  "controlcenter",
+  "control center",
+  "systemuiserver",
+  "dock",
+];
+
+export function isSystemProcessName(appName: string): boolean {
+  const name = appName.toLowerCase().trim();
+  return SYSTEM_PROCESS_NAMES.includes(name) || name.includes("loginwindow");
+}
+
 export const activityRepo = {
   // Upsert Path for background tracking events
   async insertEvent(event: {
@@ -155,6 +173,11 @@ export const activityRepo = {
     duration_seconds: number;
     category?: string | null;
   }) {
+    // Guard: never record lock screen / system UI processes as activity
+    if (isSystemProcessName(event.app_name)) {
+      return;
+    }
+
     const db = await getDb();
     const category = event.category || categorizeApp(event.app_name);
 
@@ -672,6 +695,17 @@ export async function initializeDefaultSettings() {
     console.log("[Vera DB] Purged any existing mislabeled 'loginwindow' captures.");
   } catch (err) {
     console.error("Failed to delete loginwindow captures:", err);
+  }
+
+  // Delete existing system-process rows (lock screen, screensaver, ...) from activity history
+  try {
+    const namesList = SYSTEM_PROCESS_NAMES.map((n) => `'${n}'`).join(", ");
+    await db.execute(
+      `DELETE FROM activity_events WHERE LOWER(app_name) IN (${namesList}) OR LOWER(app_name) LIKE '%loginwindow%'`
+    );
+    console.log("[Vera DB] Purged system-process rows from activity events.");
+  } catch (err) {
+    console.error("Failed to delete system-process activity events:", err);
   }
 }
 

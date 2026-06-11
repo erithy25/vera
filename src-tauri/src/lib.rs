@@ -25,6 +25,8 @@ extern "C" {
     fn ffi_check_accessibility_permission() -> bool;
     #[link_name = "request_accessibility_permission"]
     fn ffi_request_accessibility_permission() -> bool;
+    #[link_name = "is_screen_locked"]
+    fn ffi_is_screen_locked() -> bool;
 }
 
 #[derive(Clone, Serialize)]
@@ -378,6 +380,11 @@ pub fn run() {
                   continue;
               }
 
+              // Never capture while the screen is locked
+              if unsafe { ffi_is_screen_locked() } {
+                  continue;
+              }
+
               let activity = unsafe { get_active_app_activity() };
               let app_name = if !activity.app_name.is_null() {
                   unsafe { std::ffi::CStr::from_ptr(activity.app_name).to_string_lossy().into_owned() }
@@ -575,6 +582,28 @@ fn thread_loop_tick(
         return;
     }
 
+    // Screen is locked — locked time never counts as activity.
+    // Close any open session and record nothing until unlock.
+    if unsafe { ffi_is_screen_locked() } {
+        if let Some(app) = current_app.take() {
+            let start = current_start_time.take().unwrap_or(now_epoch_ms);
+            let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
+            if duration > 0 {
+                let payload = ActivitySegmentPayload {
+                    app_name: app,
+                    window_title: current_window.take(),
+                    started_at: start,
+                    duration_seconds: duration,
+                    category: None,
+                };
+                let _ = app_handle.emit("activity-segment", &payload);
+            } else {
+                current_window.take();
+            }
+        }
+        return;
+    }
+
     // Query active app
     let activity = unsafe { get_active_app_activity() };
 
@@ -603,9 +632,9 @@ fn thread_loop_tick(
         return;
     }
 
-    // Exclude Vera itself
+    // Exclude Vera itself and system UI processes (loginwindow, screensaver, dock, ...)
     let is_vera = app_name == "Vera" || app_name == "vera" || bundle_id == "com.vera.app";
-    if is_vera {
+    if is_vera || is_system_process(&app_name, &bundle_id) {
         if let Some(prev_app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let duration = (now_epoch_ms.saturating_sub(start)) / 1000;

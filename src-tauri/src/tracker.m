@@ -86,6 +86,21 @@ AppActivity get_active_app_activity() {
     return activity;
 }
 
+bool is_screen_locked(void) {
+    CFDictionaryRef sessionInfo = CGSessionCopyCurrentDictionary();
+    if (!sessionInfo) {
+        // No session info available — treat as locked so nothing gets tracked
+        return true;
+    }
+    bool locked = false;
+    CFBooleanRef lockedValue = (CFBooleanRef)CFDictionaryGetValue(sessionInfo, CFSTR("CGSSessionScreenIsLocked"));
+    if (lockedValue) {
+        locked = CFBooleanGetValue(lockedValue);
+    }
+    CFRelease(sessionInfo);
+    return locked;
+}
+
 bool check_accessibility_permission() {
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wdeprecated-declarations"
