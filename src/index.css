@@ -1,0 +1,58 @@
+@import "tailwindcss" source(none);
+@source "./**/*.{ts,tsx}";
+@source "../index.html";
+
+@theme {
+  /* Font Family Overrides */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Newsreader", Georgia, serif;
+
+  /* Custom Color Tokens */
+  --color-bg-warm: #F7F6F3;
+  --color-card-surface: #FFFFFF;
+  --color-border-hairline: #E6E4DD;
+  --color-text-primary: #1C1C1A;
+  --color-text-muted: #8A8A82;
+  --color-text-faint: #A8A8A0;
+  --color-active-hover: #EFEDE8;
+}
+
+/* Base Styles */
+body {
+  background-color: var(--color-bg-warm);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Spec Custom Utility: Hairline Border and Shadow Card style */
+.card-style {
+  background-color: var(--color-card-surface);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card-style:hover {
+  border-color: #D2CFC6;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+/* Scrollbar styling for a clean, mac-like interface */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-hairline);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-faint);
+}
