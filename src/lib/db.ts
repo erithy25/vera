@@ -22,6 +22,7 @@ export interface DbGoal {
   title: string;
   target_minutes: number;
   created_at: number;
+  done: number; // SQLite boolean (0/1)
 }
 
 export interface DbActivityEvent {
@@ -139,17 +140,23 @@ export const notesRepo = {
 export const goalsRepo = {
   async getDailyGoal(): Promise<DbGoal | null> {
     const db = await getDb();
+    // The most recent goal that is not done yet acts as the daily goal
     const rows = await db.select<DbGoal[]>(
-      "SELECT * FROM goals ORDER BY created_at DESC LIMIT 1"
+      "SELECT * FROM goals WHERE done = 0 ORDER BY created_at DESC LIMIT 1"
     );
     return rows[0] || null;
+  },
+
+  async list(): Promise<DbGoal[]> {
+    const db = await getDb();
+    return db.select<DbGoal[]>("SELECT * FROM goals ORDER BY created_at DESC");
   },
 
   async add(title: string, targetMinutes: number = 60): Promise<DbGoal> {
     const db = await getDb();
     const now = Date.now();
     const result = await db.execute(
-      "INSERT INTO goals (title, target_minutes, created_at) VALUES ($1, $2, $3)",
+      "INSERT INTO goals (title, target_minutes, created_at, done) VALUES ($1, $2, $3, 0)",
       [title, targetMinutes, now]
     );
     return {
@@ -157,7 +164,18 @@ export const goalsRepo = {
       title,
       target_minutes: targetMinutes,
       created_at: now,
+      done: 0,
     };
+  },
+
+  async setDone(id: number, done: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE goals SET done = $1 WHERE id = $2", [done ? 1 : 0, id]);
+  },
+
+  async remove(id: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM goals WHERE id = $1", [id]);
   },
 };
 

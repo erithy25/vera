@@ -5,6 +5,7 @@ import { Dashboard } from "./components/Dashboard";
 import { Knowledge } from "./components/Knowledge";
 import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
+import { Goals } from "./components/Goals";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
@@ -200,6 +201,8 @@ function App() {
               <Agents />
             ) : currentView === "Knowledge" ? (
               <Knowledge />
+            ) : currentView === "Goals" ? (
+              <Goals />
             ) : currentView === "Settings" ? (
               <Settings />
             ) : (

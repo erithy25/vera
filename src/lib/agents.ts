@@ -36,6 +36,7 @@ const ACTION_INSTRUCTIONS = [
   '{"action": "create_goal", "title": "Goal title"}',
   "```",
   "Action rules: at most one action per reply. Only these two action types exist — never invent others. The user must explicitly approve the proposal before anything is saved, so never claim the note or goal was already created.",
+  'When the user clearly asks you to create or save a note or goal (e.g. "create a goal to...", "save a note about..."), emit the vera-action block directly in that same reply — do not ask for confirmation in plain text first. Ask a question only when the content of the note or goal is genuinely unclear.',
 ].join("\n");
 
 const SHARED_RULES = [
@@ -131,7 +132,11 @@ ${active.map((t) => `- ${t.label}: ${t.minutes} mins`).join("\n") || "- (nothing
 }
 
 async function buildGoalsNotesContext(): Promise<string> {
-  const [goal, notes] = await Promise.all([goalsRepo.getDailyGoal(), notesRepo.list()]);
+  const [goals, notes] = await Promise.all([goalsRepo.list(), notesRepo.list()]);
+  const goalLines = goals
+    .slice(0, 5)
+    .map((g) => `- ${g.done ? "[done] " : ""}${g.title}`)
+    .join("\n");
   const noteLines = notes
     .slice(0, 6)
     .map((n) => {
@@ -141,8 +146,8 @@ async function buildGoalsNotesContext(): Promise<string> {
     })
     .join("\n");
 
-  return `--- DAILY GOAL ---
-${goal ? `- ${goal.title} (${goal.target_minutes} minutes target)` : "- No active daily goal set."}
+  return `--- GOALS ---
+${goalLines || "- No goals set yet."}
 
 --- RECENT QUICK NOTES ---
 ${noteLines || "- (no notes yet)"}`;

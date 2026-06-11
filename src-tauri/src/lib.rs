@@ -697,6 +697,14 @@ pub fn run() {
         ALTER TABLE captures ADD COLUMN embedding TEXT;
       ",
       kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 4,
+      description: "add_done_to_goals",
+      sql: "
+        ALTER TABLE goals ADD COLUMN done INTEGER NOT NULL DEFAULT 0;
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 
