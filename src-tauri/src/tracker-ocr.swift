@@ -12,8 +12,21 @@ if #available(macOS 10.15, *) {
     }
 }
 
-// Shareable content query must be done in a task or async context, or we can use semaphores with async tasks.
 let semaphore = DispatchSemaphore(value: 0)
+
+// Line-level noise filter: drop UI chrome fragments, keep substantive content.
+// - very short fragments (< 25 chars) are menu items, buttons, tab titles
+// - single words are almost always chrome; long single tokens (URLs, paths) stay
+// - lines ending in an ellipsis are truncated UI labels
+func isSubstantiveLine(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return false }
+    if trimmed.hasSuffix("...") || trimmed.hasSuffix("…") { return false }
+    let words = trimmed.split(whereSeparator: { $0.isWhitespace })
+    if words.count == 1 && trimmed.count < 40 { return false }
+    if trimmed.count < 25 { return false }
+    return true
+}
 
 Task {
     do {
@@ -25,25 +38,52 @@ Task {
             return
         }
 
-        // Define content filter for the display
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        
+        // Focus on the frontmost app's main window so the menu bar, dock and
+        // other windows never enter the OCR at all. Fall back to the full
+        // display only when no usable window is found.
+        var isFullDisplay = false
+        var filter: SCContentFilter
+        var captureWidth: Int
+        var captureHeight: Int
+
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let candidateWindows = shareableContent.windows.filter { win in
+            guard let pid = frontmostPid, let owner = win.owningApplication else { return false }
+            return owner.processID == pid
+                && win.windowLayer == 0
+                && win.isOnScreen
+                && win.frame.width >= 300
+                && win.frame.height >= 200
+        }
+        let focusedWindow = candidateWindows.max(by: {
+            $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+        })
+
+        if let window = focusedWindow {
+            filter = SCContentFilter(desktopIndependentWindow: window)
+            captureWidth = Int(window.frame.width)
+            captureHeight = Int(window.frame.height)
+        } else {
+            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            captureWidth = display.width
+            captureHeight = display.height
+            isFullDisplay = true
+        }
+
         // Configure stream to capture and downscale
         let config = SCStreamConfiguration()
-        
-        let width = display.width
-        let height = display.height
-        let maxDimension = 1600
-        var targetWidth = width
-        var targetHeight = height
 
-        if width > maxDimension || height > maxDimension {
-            if width > height {
+        let maxDimension = 1600
+        var targetWidth = captureWidth
+        var targetHeight = captureHeight
+
+        if captureWidth > maxDimension || captureHeight > maxDimension {
+            if captureWidth > captureHeight {
                 targetWidth = maxDimension
-                targetHeight = Int(Double(height) * (Double(maxDimension) / Double(width)))
+                targetHeight = Int(Double(captureHeight) * (Double(maxDimension) / Double(captureWidth)))
             } else {
                 targetHeight = maxDimension
-                targetWidth = Int(Double(width) * (Double(maxDimension) / Double(height)))
+                targetWidth = Int(Double(captureWidth) * (Double(maxDimension) / Double(captureHeight)))
             }
         }
 
@@ -54,6 +94,7 @@ Task {
         let imageRef = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
 
         // Setup Vision OCR request handler with the captured CGImage
+        let fullDisplayCapture = isFullDisplay
         let requestHandler = VNImageRequestHandler(cgImage: imageRef, options: [:])
         let request = VNRecognizeTextRequest { (request, error) in
             if let error = error {
@@ -68,13 +109,42 @@ Task {
                 return
             }
 
-            var recognizedText = ""
+            // Split lines by region using the Vision bounding boxes
+            // (normalized coordinates, origin at the bottom-left).
+            var mainLines: [String] = []
+            var edgeLines: [String] = []
+
             for observation in observations {
                 guard let candidate = observation.topCandidates(1).first else { continue }
-                recognizedText += candidate.string + "\n"
+                let line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let box = observation.boundingBox
+
+                if fullDisplayCapture {
+                    // Ignore the menu-bar strip and the dock region of the screen
+                    if box.maxY > 0.97 { continue }
+                    if box.minY < 0.06 { continue }
+                }
+
+                if !isSubstantiveLine(line) { continue }
+
+                // Narrow edge columns are typically sidebars / tab strips
+                if box.midX < 0.2 || box.midX > 0.8 {
+                    edgeLines.append(line)
+                } else {
+                    mainLines.append(line)
+                }
             }
 
-            let trimmedText = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Prefer the main content rectangle; keep edge text only when the
+            // main area has too little to stand on its own.
+            let mainText = mainLines.joined(separator: "\n")
+            let finalText: String
+            if mainText.count >= 200 {
+                finalText = mainText
+            } else {
+                finalText = (mainLines + edgeLines).joined(separator: "\n")
+            }
+            let trimmedText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             let response: [String: Any] = [
                 "status": "Success",
@@ -95,7 +165,7 @@ Task {
         request.usesLanguageCorrection = true
 
         try requestHandler.perform([request])
-        
+
     } catch {
         let errorDescription = error.localizedDescription
         if errorDescription.contains("denied") || errorDescription.contains("permission") || errorDescription.contains("authorized") {

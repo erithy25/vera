@@ -66,6 +66,34 @@ struct PrivacyState {
     settings: Mutex<PrivacySettings>,
 }
 
+// Capture quality gates: skip captures without substantive content and
+// near-identical re-captures of static UI (sidebars, menus, tab strips).
+const MIN_CAPTURE_CHARS: usize = 64;
+const CAPTURE_SIMILARITY_SKIP: f64 = 0.85;
+
+fn text_token_set(text: &str) -> std::collections::HashSet<String> {
+    text.to_lowercase()
+        .split_whitespace()
+        .map(|w| w.to_string())
+        .collect()
+}
+
+fn jaccard_similarity(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let intersection = a.intersection(b).count();
+    let union = a.len() + b.len() - intersection;
+    if union == 0 {
+        1.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
 fn is_browser(app_name: &str, bundle_id: &str) -> bool {
     let app_lower = app_name.to_lowercase();
     let bundle_lower = bundle_id.to_lowercase();
@@ -690,6 +718,89 @@ async fn test_cloud_connection(
     }
 }
 
+/// One-time-per-launch cleanup of low-value screen captures: chrome-only
+/// short fragments, exact duplicates, and near-duplicate re-captures of
+/// static UI. Idempotent. Returns (short, exact-dup, near-dup) delete counts.
+fn cleanup_low_value_captures(
+    db_path: &std::path::Path,
+) -> Result<(usize, usize, usize), rusqlite::Error> {
+    let conn = rusqlite::Connection::open(db_path)?;
+    let _ = conn.busy_timeout(Duration::from_millis(3000));
+
+    // Fresh installs have no captures table yet — nothing to clean
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='captures'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok((0, 0, 0));
+    }
+
+    // (a) short fragments: chrome/truncated-label rows with no substance
+    let short_deleted = conn.execute(
+        "DELETE FROM captures WHERE char_count < 64 OR LENGTH(TRIM(ocr_text)) < 64",
+        [],
+    )?;
+
+    // (b) exact duplicates: keep only the newest row per (app, text)
+    let exact_deleted = conn.execute(
+        "DELETE FROM captures WHERE id NOT IN (SELECT MAX(id) FROM captures GROUP BY app_name, ocr_text)",
+        [],
+    )?;
+
+    // (c) near-duplicates: chronological scan per app, drop rows that are
+    // >85% token-identical to a recently kept capture of the same app
+    let mut stmt =
+        conn.prepare("SELECT id, app_name, ocr_text FROM captures ORDER BY app_name, captured_at ASC")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    drop(stmt);
+
+    let mut to_delete: Vec<i64> = Vec::new();
+    let mut current_app = String::new();
+    let mut kept_recent: Vec<std::collections::HashSet<String>> = Vec::new();
+
+    for (id, app_name, text) in rows {
+        if app_name != current_app {
+            current_app = app_name;
+            kept_recent.clear();
+        }
+        let tokens = text_token_set(&text);
+        let near_dup = kept_recent
+            .iter()
+            .any(|prev| jaccard_similarity(prev, &tokens) > CAPTURE_SIMILARITY_SKIP);
+        if near_dup {
+            to_delete.push(id);
+        } else {
+            if kept_recent.len() >= 5 {
+                kept_recent.remove(0);
+            }
+            kept_recent.push(tokens);
+        }
+    }
+
+    let near_dup_deleted = to_delete.len();
+    for chunk in to_delete.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!("DELETE FROM captures WHERE id IN ({})", placeholders);
+        conn.execute(&sql, rusqlite::params_from_iter(chunk.iter()))?;
+    }
+
+    Ok((short_deleted, exact_deleted, near_dup_deleted))
+}
+
 /// Purge lock-screen / system-process rows from activity_events.
 /// Idempotent; runs on every launch before the UI reads any stats.
 /// Returns (deleted row count, remaining DISTINCT app names).
@@ -839,25 +950,39 @@ pub fn run() {
           let db_file = resolve_db_path(app.handle());
 
           match db_file {
-              Some(path) => match cleanup_system_process_rows(&path) {
-                  Ok((deleted, names)) => {
-                      println!(
-                          "[Vera Cleanup] deleted {} system-process rows from activity_events ({})",
-                          deleted,
-                          path.display()
-                      );
-                      println!(
-                          "[Vera Cleanup] remaining DISTINCT app_name values ({}):",
-                          names.len()
-                      );
-                      for name in &names {
-                          println!("[Vera Cleanup]   - {:?}", name);
+              Some(path) => {
+                  match cleanup_system_process_rows(&path) {
+                      Ok((deleted, names)) => {
+                          println!(
+                              "[Vera Cleanup] deleted {} system-process rows from activity_events ({})",
+                              deleted,
+                              path.display()
+                          );
+                          println!(
+                              "[Vera Cleanup] remaining DISTINCT app_name values ({}):",
+                              names.len()
+                          );
+                          for name in &names {
+                              println!("[Vera Cleanup]   - {:?}", name);
+                          }
+                      }
+                      Err(e) => {
+                          println!("[Vera Cleanup] FAILED to clean activity_events at {}: {}", path.display(), e);
                       }
                   }
-                  Err(e) => {
-                      println!("[Vera Cleanup] FAILED to clean activity_events at {}: {}", path.display(), e);
+
+                  match cleanup_low_value_captures(&path) {
+                      Ok((short, exact, near)) => {
+                          println!(
+                              "[Vera Cleanup] captures: removed {} short/chrome rows, {} exact duplicates, {} near-duplicates",
+                              short, exact, near
+                          );
+                      }
+                      Err(e) => {
+                          println!("[Vera Cleanup] FAILED to clean captures at {}: {}", path.display(), e);
+                      }
                   }
-              },
+              }
               None => {
                   println!("[Vera Cleanup] no existing vera.db found yet — nothing to clean");
               }
@@ -904,6 +1029,9 @@ pub fn run() {
           let mut last_capture_time = Instant::now() - Duration::from_secs(60);
           let mut permission_denied = false;
           let mut last_permission_check = Instant::now() - Duration::from_secs(120);
+          // Token sets of the most recent stored captures, for near-duplicate skipping
+          let mut recent_capture_texts: std::collections::VecDeque<std::collections::HashSet<String>> =
+              std::collections::VecDeque::new();
 
           loop {
               std::thread::sleep(Duration::from_secs(3));
@@ -1013,6 +1141,38 @@ pub fn run() {
                                           let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                           let char_count = parsed.get("char_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
+                                          // Mark this attempt as done no matter whether we store it,
+                                          // so an unchanged screen is not re-OCRed every tick
+                                          last_app = Some(app_name.clone());
+                                          last_window = window_title.clone();
+                                          last_capture_time = Instant::now();
+
+                                          // Quality gate: no substantive content left after filtering
+                                          if char_count < MIN_CAPTURE_CHARS {
+                                              println!(
+                                                  "[Vera Capture] Skipped low-content capture ({} chars) from {}",
+                                                  char_count, app_name
+                                              );
+                                              continue;
+                                          }
+
+                                          // Dedup: near-identical to a recent capture (static UI)
+                                          let tokens = text_token_set(&text);
+                                          let is_near_duplicate = recent_capture_texts
+                                              .iter()
+                                              .any(|prev| jaccard_similarity(prev, &tokens) > CAPTURE_SIMILARITY_SKIP);
+                                          if is_near_duplicate {
+                                              println!(
+                                                  "[Vera Capture] Skipped near-duplicate capture from {}",
+                                                  app_name
+                                              );
+                                              continue;
+                                          }
+                                          if recent_capture_texts.len() >= 3 {
+                                              recent_capture_texts.pop_front();
+                                          }
+                                          recent_capture_texts.push_back(tokens);
+
                                           let payload = CapturePayload {
                                               app_name: app_name.clone(),
                                               window_title: window_title.clone(),
@@ -1022,10 +1182,6 @@ pub fn run() {
                                               error: None,
                                           };
                                           let _ = app_handle_capture.emit("screen-capture", &payload);
-
-                                          last_app = Some(app_name);
-                                          last_window = window_title;
-                                          last_capture_time = Instant::now();
                                       } else if status == "PermissionRequired" {
                                           // Stop spamming — back off for 60 seconds
                                           permission_denied = true;

@@ -11,6 +11,7 @@ import { LockScreen } from "./components/LockScreen";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
+import { tokenSimilarity } from "./lib/textSimilarity";
 
 async function backfillEmbeddings() {
   try {
@@ -201,7 +202,13 @@ function App() {
         unlistenCapture = await listen<any>("screen-capture", async (event) => {
           try {
             const { app_name, window_title, ocr_text, char_count, status } = event.payload;
-            if (status === "Success" && char_count > 0) {
+            // Quality gates (mirror the backend): substantive content only,
+            // and no near-duplicate of the latest capture for this app
+            if (status === "Success" && char_count >= 64) {
+              const latest = await capturesRepo.latestForApp(app_name);
+              if (latest && tokenSimilarity(latest.ocr_text, ocr_text) > 0.85) {
+                return;
+              }
               const insertId = await capturesRepo.insert({
                 app_name,
                 window_title,

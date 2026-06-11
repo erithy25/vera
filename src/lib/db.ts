@@ -408,6 +408,15 @@ export const capturesRepo = {
     return db.select<DbCapture[]>("SELECT * FROM captures ORDER BY captured_at DESC");
   },
 
+  async latestForApp(appName: string): Promise<DbCapture | null> {
+    const db = await getDb();
+    const rows = await db.select<DbCapture[]>(
+      "SELECT * FROM captures WHERE app_name = $1 ORDER BY captured_at DESC LIMIT 1",
+      [appName]
+    );
+    return rows[0] || null;
+  },
+
   async insert(capture: {
     app_name: string;
     window_title: string | null;
