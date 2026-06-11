@@ -88,6 +88,8 @@ export const CommandBar: React.FC = () => {
 
   const clearConversation = () => {
     setHistory([]);
+    shouldStickToBottomRef.current = true;
+    inputRef.current?.focus();
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -98,6 +100,8 @@ export const CommandBar: React.FC = () => {
     const queryId = `q-${Date.now()}`;
     setInputValue("");
     setIsLoading(true);
+    // Sending a new message always snaps the conversation to the bottom
+    shouldStickToBottomRef.current = true;
 
     if (!ollamaOnline) {
       const newEntry: HistoryEntry = {
@@ -304,15 +308,34 @@ Rules:
     }
   };
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const prevLoadingRef = useRef(false);
 
-  // Auto-scroll to bottom whenever history changes
+  // Only stick to the bottom while the user is already near it, so they
+  // can scroll up and read older messages without being pulled back down
+  const handleChatScroll = () => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    shouldStickToBottomRef.current = distanceFromBottom < 80;
+  };
+
+  // Auto-scroll to the latest message (fires on every streamed chunk too)
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    const el = messagesScrollRef.current;
+    if (el && shouldStickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [history]);
+
+  // Return focus to the ask bar once a reply has finished streaming
+  useEffect(() => {
+    if (prevLoadingRef.current && !isLoading) {
+      inputRef.current?.focus();
+    }
+    prevLoadingRef.current = isLoading;
+  }, [isLoading]);
 
   return (
     <div className="w-full max-w-[1000px] flex flex-col gap-5">
@@ -372,27 +395,26 @@ Rules:
         </div>
       )}
 
-      {/* Single Chat Window — all messages inside one card */}
+      {/* Single Chat Window — the whole conversation lives in one card */}
       {history.length > 0 && (
         <div className="w-full flex flex-col gap-3">
-          <div
-            ref={chatContainerRef}
-            className="card-style flex flex-col overflow-hidden"
-          >
+          <div className="card-style flex flex-col overflow-hidden">
             {/* Scrollable messages area */}
             <div
+              ref={messagesScrollRef}
+              onScroll={handleChatScroll}
               className="flex flex-col overflow-y-auto px-6 py-5"
               style={{ maxHeight: "60vh" }}
             >
               {history.map((item, idx) => (
                 <div key={item.id} className="flex flex-col">
-                  {/* Subtle divider between Q&A pairs (not before the first) */}
+                  {/* Hairline divider between conversation turns */}
                   {idx > 0 && (
                     <div className="h-px bg-border-hairline w-full my-5" />
                   )}
 
                   {/* User Message Bubble */}
-                  <div className="flex gap-3 items-start w-full mb-4">
+                  <div className="flex gap-3 items-start w-full">
                     <div className="w-7 h-7 rounded-full bg-active-hover border border-border-hairline flex items-center justify-center shrink-0 mt-0.5">
                       <span className="font-sans text-[10px] font-semibold text-text-primary">
                         TM
@@ -402,6 +424,9 @@ Rules:
                       {item.query}
                     </div>
                   </div>
+
+                  {/* Hairline divider between question and reply */}
+                  <div className="h-px bg-border-hairline w-full my-4" />
 
                   {/* Vera Response Bubble */}
                   <div className="flex gap-3 items-start w-full">
@@ -455,20 +480,17 @@ Rules:
                   </div>
                 </div>
               ))}
-
-              {/* Invisible anchor for auto-scroll */}
-              <div ref={messagesEndRef} />
             </div>
           </div>
 
-          {/* New conversation button — outside the card */}
+          {/* New chat button — clears the window and starts a fresh conversation */}
           {history.some((h) => h.reply) && !isLoading && (
             <button
               onClick={clearConversation}
               className="self-center flex items-center gap-1.5 font-sans text-[12px] text-text-faint hover:text-text-muted transition-colors duration-150 py-1 cursor-pointer"
             >
               <RotateCcw size={12} strokeWidth={1.5} />
-              New conversation
+              New chat
             </button>
           )}
         </div>
