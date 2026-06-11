@@ -67,25 +67,35 @@ fn is_browser(app_name: &str, bundle_id: &str) -> bool {
     app_lower == "microsoft edge" || app_lower == "edge" || bundle_lower == "com.microsoft.edgemc" || bundle_lower == "com.microsoft.edge"
 }
 
+// Processes that must never be recorded as user activity. Matched against the
+// lowercased app name exactly (never as substring), so real apps like
+// "System Settings" or "Docker" are not affected.
+const SYSTEM_PROCESS_BLOCKLIST: &[&str] = &[
+    "loginwindow",
+    "login window",
+    "screensaverengine",
+    "screensaver",
+    "screen saver",
+    "windowserver",
+    "window server",
+    "systemuiserver",
+    "controlcenter",
+    "control center",
+    "dock",
+    "unknown", // tracker fallback when a process has no proper localized name
+];
+
 fn is_system_process(app_name: &str, bundle_id: &str) -> bool {
     let app_lower = app_name.to_lowercase();
     let bundle_lower = bundle_id.to_lowercase();
-    
-    app_lower == "loginwindow" ||
-    app_lower == "windowserver" ||
-    app_lower == "window server" ||
-    app_lower == "screensaverengine" ||
-    app_lower == "screensaver" ||
-    app_lower == "controlcenter" ||
-    app_lower == "control center" ||
-    app_lower == "systemuiserver" ||
-    app_lower == "dock" ||
-    bundle_lower.contains("loginwindow") ||
-    bundle_lower.contains("windowserver") ||
-    bundle_lower.contains("screensaver") ||
-    bundle_lower.contains("controlcenter") ||
-    bundle_lower.contains("systemuiserver") ||
-    bundle_lower.contains("dock")
+
+    SYSTEM_PROCESS_BLOCKLIST.contains(&app_lower.as_str())
+        || bundle_lower.contains("loginwindow")
+        || bundle_lower.contains("windowserver")
+        || bundle_lower.contains("screensaver")
+        || bundle_lower.contains("systemuiserver")
+        || bundle_lower == "com.apple.controlcenter"
+        || bundle_lower == "com.apple.dock"
 }
 
 fn get_active_browser_url(app_name: &str, bundle_id: &str) -> Option<String> {
@@ -218,6 +228,31 @@ fn update_privacy_settings(
     }
 }
 
+/// Purge lock-screen / system-process rows from activity_events.
+/// Idempotent; runs on every launch before the UI reads any stats.
+/// Returns (deleted row count, remaining DISTINCT app names).
+fn cleanup_system_process_rows(db_path: &std::path::Path) -> Result<(usize, Vec<String>), rusqlite::Error> {
+    let conn = rusqlite::Connection::open(db_path)?;
+
+    let deleted = conn.execute(
+        "DELETE FROM activity_events
+         WHERE app_name IN ('loginwindow','ScreenSaverEngine','WindowServer','SystemUIServer','Dock')
+            OR LOWER(app_name) LIKE '%loginwindow%'
+            OR LOWER(app_name) LIKE '%screensaver%'
+            OR REPLACE(LOWER(app_name), ' ', '') IN
+               ('loginwindow','screensaverengine','screensaver','windowserver','systemuiserver','controlcenter','dock','unknown')",
+        [],
+    )?;
+
+    let mut stmt = conn.prepare("SELECT DISTINCT app_name FROM activity_events ORDER BY app_name")?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<String>>();
+
+    Ok((deleted, names))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let migrations = vec![
@@ -316,6 +351,41 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+
+      // Startup cleanup: purge system-process rows (loginwindow etc.) from the
+      // activity history BEFORE the UI loads, and surface what is stored.
+      // tauri-plugin-sql resolves "sqlite:vera.db" against the app config dir.
+      {
+          let db_file = [app.path().app_config_dir(), app.path().app_data_dir()]
+              .into_iter()
+              .filter_map(|dir| dir.ok().map(|d| d.join("vera.db")))
+              .find(|p| p.exists());
+
+          match db_file {
+              Some(path) => match cleanup_system_process_rows(&path) {
+                  Ok((deleted, names)) => {
+                      println!(
+                          "[Vera Cleanup] deleted {} system-process rows from activity_events ({})",
+                          deleted,
+                          path.display()
+                      );
+                      println!(
+                          "[Vera Cleanup] remaining DISTINCT app_name values ({}):",
+                          names.len()
+                      );
+                      for name in &names {
+                          println!("[Vera Cleanup]   - {:?}", name);
+                      }
+                  }
+                  Err(e) => {
+                      println!("[Vera Cleanup] FAILED to clean activity_events at {}: {}", path.display(), e);
+                  }
+              },
+              None => {
+                  println!("[Vera Cleanup] no existing vera.db found yet — nothing to clean");
+              }
+          }
       }
 
       // Resolve the bundled swift OCR helper resource path (compiled at build time)

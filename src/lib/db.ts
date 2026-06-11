@@ -146,17 +146,22 @@ export const goalsRepo = {
   },
 };
 
-// System UI processes (lock screen, screensaver, ...) that must never count as activity
+// System UI processes (lock screen, screensaver, ...) that must never count as
+// activity. Matched exactly against the lowercased app name — mirrors
+// SYSTEM_PROCESS_BLOCKLIST in src-tauri/src/lib.rs.
 const SYSTEM_PROCESS_NAMES = [
   "loginwindow",
+  "login window",
   "windowserver",
   "window server",
   "screensaverengine",
   "screensaver",
+  "screen saver",
   "controlcenter",
   "control center",
   "systemuiserver",
   "dock",
+  "unknown",
 ];
 
 export function isSystemProcessName(appName: string): boolean {
