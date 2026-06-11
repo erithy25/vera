@@ -25,5 +25,8 @@ log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
-# Direct sqlite access for the startup cleanup (same libsqlite3-sys 0.30 as sqlx/tauri-plugin-sql)
+# Direct sqlite access for the startup cleanup and cloud-key storage
+# (same libsqlite3-sys 0.30 as sqlx/tauri-plugin-sql)
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Cloud engine HTTP calls (Anthropic / OpenAI / Ollama non-streaming)
+reqwest = { version = "0.12", features = ["json"] }

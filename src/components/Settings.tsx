@@ -4,12 +4,29 @@ import { Plus, X, Shield, ShieldAlert, Trash2, EyeOff, RotateCcw } from "lucide-
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 
+type AiEngine = "local" | "cloud";
+type CloudProvider = "anthropic" | "openai";
+
+const errorToMessage = (err: any): string =>
+  typeof err === "string" ? err : err?.message || String(err);
+
 export const Settings: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
   const [retentionDays, setRetentionDays] = useState<string>("30");
+
+  // AI Engine state (local by default; cloud is bring-your-own-key)
+  const [aiEngine, setAiEngine] = useState<AiEngine>("local");
+  const [cloudProvider, setCloudProviderState] = useState<CloudProvider>("anthropic");
+  const [cloudModel, setCloudModelState] = useState<string>("claude-sonnet-4-6");
+  const [keyInput, setKeyInput] = useState<string>("");
+  const [keySaved, setKeySaved] = useState<boolean>(false);
+  const [testState, setTestState] = useState<{ status: "idle" | "testing" | "ok" | "error"; message: string }>({
+    status: "idle",
+    message: "",
+  });
 
   const [appInput, setAppInput] = useState("");
   const [domainInput, setDomainInput] = useState("");
@@ -43,7 +60,7 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed] = await Promise.all([
+      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider] = await Promise.all([
         settingsRepo.getCapturePaused(),
         settingsRepo.getExcludedApps(),
         settingsRepo.getExcludedDomains(),
@@ -51,6 +68,8 @@ export const Settings: React.FC = () => {
         settingsRepo.getRetentionDays(),
         settingsRepo.getChatModel(),
         settingsRepo.getEmbeddingModel(),
+        settingsRepo.getAiEngine(),
+        settingsRepo.getCloudProvider(),
       ]);
 
       setIsPaused(paused);
@@ -60,6 +79,10 @@ export const Settings: React.FC = () => {
       setRetentionDays(retention);
       setChatModel(dbChat);
       setEmbeddingModel(dbEmbed);
+      setAiEngine(engine);
+      setCloudProviderState(provider);
+      setCloudModelState(await settingsRepo.getCloudModel(provider));
+      setKeySaved(await invoke<boolean>("has_cloud_api_key", { provider }));
 
       // Initialize Rust state
       await invoke("update_privacy_settings", {
@@ -77,6 +100,81 @@ export const Settings: React.FC = () => {
   useEffect(() => {
     loadSettings();
   }, []);
+
+  const handleEngineChange = async (engine: AiEngine) => {
+    setAiEngine(engine);
+    try {
+      await settingsRepo.setAiEngine(engine);
+      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
+    } catch (err) {
+      console.error("Failed to save AI engine:", err);
+    }
+  };
+
+  const handleProviderChange = async (provider: CloudProvider) => {
+    setCloudProviderState(provider);
+    setKeyInput("");
+    setTestState({ status: "idle", message: "" });
+    try {
+      await settingsRepo.setCloudProvider(provider);
+      setCloudModelState(await settingsRepo.getCloudModel(provider));
+      setKeySaved(await invoke<boolean>("has_cloud_api_key", { provider }));
+      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
+    } catch (err) {
+      console.error("Failed to switch cloud provider:", err);
+    }
+  };
+
+  const handleSaveCloudModel = async (val: string) => {
+    const cleaned = val.trim();
+    if (!cleaned) return;
+    try {
+      await settingsRepo.setCloudModel(cloudProvider, cleaned);
+      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
+    } catch (err) {
+      console.error("Failed to save cloud model:", err);
+    }
+  };
+
+  // The key goes straight to Rust and is never echoed back to the UI
+  const saveKeyIfEntered = async (): Promise<void> => {
+    const entered = keyInput.trim();
+    if (!entered) return;
+    await invoke("save_cloud_api_key", { provider: cloudProvider, key: entered });
+    setKeyInput("");
+    setKeySaved(true);
+  };
+
+  const handleKeyBlur = async () => {
+    try {
+      await saveKeyIfEntered();
+    } catch (err) {
+      setTestState({ status: "error", message: errorToMessage(err) });
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestState({ status: "testing", message: "" });
+    try {
+      await saveKeyIfEntered();
+      const message = await invoke<string>("test_cloud_connection", {
+        provider: cloudProvider,
+        model: cloudModel.trim(),
+        key: null,
+      });
+      setTestState({ status: "ok", message });
+      await settingsRepo.setCloudLastStatus("ok");
+    } catch (err) {
+      setTestState({ status: "error", message: errorToMessage(err) });
+      try {
+        await settingsRepo.setCloudLastStatus("failed");
+      } catch (statusErr) {
+        console.error("Failed to persist cloud status:", statusErr);
+      }
+    } finally {
+      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
+    }
+  };
 
   const handleSaveChatModel = async (val: string) => {
     const cleaned = val.trim();
@@ -270,6 +368,134 @@ export const Settings: React.FC = () => {
         <p className="font-sans text-[14px] text-text-muted leading-relaxed">
           Manage your private capture configurations, data retention periods, and excluded applications.
         </p>
+      </div>
+
+      {/* AI Engine Selection Card */}
+      <div className="card-style p-6 flex flex-col gap-5">
+        <div className="flex flex-col gap-0.5 border-b border-border-hairline pb-4">
+          <h2 className="font-serif text-[20px] font-normal text-text-primary">AI Engine</h2>
+          <p className="font-sans text-[13px] text-text-faint">
+            Choose where answers are generated. Local keeps everything on-device; Cloud uses your own API key and you pay your provider directly.
+          </p>
+        </div>
+
+        {/* Engine selector */}
+        <div className="grid grid-cols-2 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+          {(
+            [
+              { value: "local", label: "Local (private)" },
+              { value: "cloud", label: "Cloud (your API key)" },
+            ] as { value: AiEngine; label: string }[]
+          ).map((opt) => {
+            const active = aiEngine === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => handleEngineChange(opt.value)}
+                className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                  active
+                    ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                    : "text-text-muted hover:text-text-primary"
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {aiEngine === "cloud" && (
+          <div className="flex flex-col gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Provider selection */}
+              <div className="flex flex-col gap-2.5">
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-serif text-[15px] font-normal text-text-primary">Provider</span>
+                  <span className="font-sans text-[12px] text-text-faint">Which API your key belongs to.</span>
+                </div>
+                <select
+                  value={cloudProvider}
+                  onChange={(e) => handleProviderChange(e.target.value as CloudProvider)}
+                  className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none cursor-pointer"
+                >
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+
+              {/* Model id */}
+              <div className="flex flex-col gap-2.5">
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-serif text-[15px] font-normal text-text-primary">Model</span>
+                  <span className="font-sans text-[12px] text-text-faint">Any model id your key supports.</span>
+                </div>
+                <input
+                  type="text"
+                  value={cloudModel}
+                  onChange={(e) => setCloudModelState(e.target.value)}
+                  onBlur={() => handleSaveCloudModel(cloudModel)}
+                  className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none"
+                  placeholder={cloudProvider === "openai" ? "e.g. gpt-4o" : "e.g. claude-sonnet-4-6"}
+                />
+              </div>
+            </div>
+
+            {/* API key + connection test */}
+            <div className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-2">
+                <span className="font-serif text-[15px] font-normal text-text-primary">API Key</span>
+                {keySaved && (
+                  <span className="flex items-center gap-1.5 px-2 py-0.5 border border-emerald-500/20 bg-emerald-500/5 rounded-full font-sans text-[11px] font-medium text-emerald-600 uppercase">
+                    Key saved
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  onBlur={handleKeyBlur}
+                  autoComplete="off"
+                  className="flex-1 px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none placeholder:text-text-faint"
+                  placeholder={
+                    keySaved
+                      ? "••••••••••••  (saved — paste a new key to replace it)"
+                      : cloudProvider === "openai"
+                        ? "sk-..."
+                        : "sk-ant-..."
+                  }
+                />
+                <button
+                  onClick={handleTestConnection}
+                  disabled={testState.status === "testing"}
+                  className={`px-3 py-1.5 border rounded-xl font-sans text-[12px] font-medium transition-all ${
+                    testState.status === "testing"
+                      ? "border-border-hairline text-text-faint cursor-default animate-pulse"
+                      : "border-text-primary text-text-primary hover:bg-active-hover cursor-pointer"
+                  }`}
+                >
+                  {testState.status === "testing" ? "Testing..." : "Test connection"}
+                </button>
+              </div>
+
+              {testState.status === "ok" && (
+                <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl font-sans text-[12px] text-emerald-600 leading-normal">
+                  {testState.message || "Connected"}
+                </div>
+              )}
+              {testState.status === "error" && (
+                <div className="p-3 bg-red-500/5 border border-red-500/10 rounded-xl font-sans text-[12px] text-red-600 leading-normal">
+                  {testState.message}
+                </div>
+              )}
+
+              <p className="font-sans text-[12px] text-text-muted leading-relaxed">
+                Your key is stored locally and only sent to {cloudProvider === "openai" ? "OpenAI" : "Anthropic"}. Embeddings and search always run on-device; in cloud mode only your question plus the retrieved snippets are sent.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Local AI Brain Setup & Status Card */}

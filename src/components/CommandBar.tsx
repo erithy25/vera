@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "lucide-react";
 import { activityRepo, capturesRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
 import { ollamaClient, cosineSimilarity } from "../lib/ollama";
@@ -45,6 +46,7 @@ export const CommandBar: React.FC = () => {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [ollamaOnline, setOllamaOnline] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [engineState, setEngineState] = useState<"local" | "cloud">("local");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Max conversation turns to send to the model (each turn = 1 user + 1 assistant)
@@ -61,11 +63,54 @@ export const CommandBar: React.FC = () => {
     }
   };
 
+  const refreshEngine = async () => {
+    try {
+      setEngineState(await settingsRepo.getAiEngine());
+    } catch (err) {
+      console.error("Failed to read AI engine setting:", err);
+    }
+  };
+
   useEffect(() => {
     checkOllama();
+    refreshEngine();
     const interval = setInterval(checkOllama, 10000);
-    return () => clearInterval(interval);
+    const onEngineUpdated = () => refreshEngine();
+    window.addEventListener("ai-engine-updated", onEngineUpdated);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("ai-engine-updated", onEngineUpdated);
+    };
   }, []);
+
+  // Cloud mode: the Rust command reads the stored key and calls the provider.
+  // Errors are surfaced in the answer area — no silent fallback to local.
+  const runCloudCompletion = async (
+    messages: { role: string; content: string }[],
+    queryId: string
+  ) => {
+    try {
+      const reply = await invoke<string>("generate_chat_completion", { messages });
+      setHistory((prev) =>
+        prev.map((item) => (item.id === queryId ? { ...item, reply } : item))
+      );
+      await settingsRepo.setCloudLastStatus("ok");
+    } catch (err: any) {
+      const message = typeof err === "string" ? err : err?.message || String(err);
+      setHistory((prev) =>
+        prev.map((item) =>
+          item.id === queryId ? { ...item, reply: `Error: ${message}` } : item
+        )
+      );
+      try {
+        await settingsRepo.setCloudLastStatus("failed");
+      } catch (statusErr) {
+        console.error("Failed to persist cloud status:", statusErr);
+      }
+    } finally {
+      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
+    }
+  };
 
   /** Build conversation history messages from prior turns (capped to MAX_HISTORY_TURNS) */
   const buildConversationHistory = (
@@ -103,7 +148,15 @@ export const CommandBar: React.FC = () => {
     // Sending a new message always snaps the conversation to the bottom
     shouldStickToBottomRef.current = true;
 
-    if (!ollamaOnline) {
+    // Read the engine fresh on every submit so a change in Settings applies immediately
+    let engine: "local" | "cloud" = "local";
+    try {
+      engine = await settingsRepo.getAiEngine();
+    } catch (err) {
+      console.error("Failed to read AI engine setting:", err);
+    }
+
+    if (engine === "local" && !ollamaOnline) {
       const newEntry: HistoryEntry = {
         id: queryId,
         query,
@@ -132,7 +185,7 @@ export const CommandBar: React.FC = () => {
     try {
       const chatModel = await settingsRepo.getChatModel();
       const installed = await ollamaClient.listModels();
-      if (!installed.includes(chatModel) && !installed.includes(`${chatModel}:latest`)) {
+      if (engine === "local" && !installed.includes(chatModel) && !installed.includes(`${chatModel}:latest`)) {
         setHistory((prev) =>
           prev.map((item) =>
             item.id === queryId
@@ -155,13 +208,17 @@ export const CommandBar: React.FC = () => {
           { role: "user", content: query }
         ];
 
-        await ollamaClient.chatStream(chatModel, messages, (chunk) => {
-          setHistory((prev) =>
-            prev.map((item) =>
-              item.id === queryId ? { ...item, reply: item.reply + chunk } : item
-            )
-          );
-        });
+        if (engine === "cloud") {
+          await runCloudCompletion(messages, queryId);
+        } else {
+          await ollamaClient.chatStream(chatModel, messages, (chunk) => {
+            setHistory((prev) =>
+              prev.map((item) =>
+                item.id === queryId ? { ...item, reply: item.reply + chunk } : item
+              )
+            );
+          });
+        }
         setIsLoading(false);
         return;
       }
@@ -288,14 +345,18 @@ Rules:
         { role: "user", content: query },
       ];
 
-      // Stream Chat Response
-      await ollamaClient.chatStream(chatModel, messages, (chunk) => {
-        setHistory((prev) =>
-          prev.map((item) =>
-            item.id === queryId ? { ...item, reply: item.reply + chunk } : item
-          )
-        );
-      });
+      // Generate the answer with the configured engine (retrieval stayed local)
+      if (engine === "cloud") {
+        await runCloudCompletion(messages, queryId);
+      } else {
+        await ollamaClient.chatStream(chatModel, messages, (chunk) => {
+          setHistory((prev) =>
+            prev.map((item) =>
+              item.id === queryId ? { ...item, reply: item.reply + chunk } : item
+            )
+          );
+        });
+      }
     } catch (err: any) {
       console.error(err);
       setHistory((prev) =>
@@ -382,8 +443,8 @@ Rules:
         </button>
       </form>
 
-      {/* Offline Alert */}
-      {!ollamaOnline && (
+      {/* Offline Alert — only relevant while the local engine is selected */}
+      {engineState === "local" && !ollamaOnline && (
         <div className="card-style p-5 border-amber-500/20 bg-amber-500/5 text-amber-900 flex flex-col gap-2 font-sans text-[13px] leading-relaxed">
           <div className="flex items-center gap-2 font-semibold text-[14px]">
             <AlertTriangle size={16} className="text-amber-600 shrink-0" />

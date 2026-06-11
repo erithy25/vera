@@ -604,6 +604,79 @@ export const settingsRepo = {
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', $1)",
       [model]
     );
+  },
+
+  // --- AI Engine (local Ollama by default, optional bring-your-own-key cloud) ---
+  // The cloud API key itself is saved and read ONLY in Rust; it is never
+  // selected from the frontend.
+
+  async getAiEngine(): Promise<"local" | "cloud"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'ai_engine'");
+    if (rows.length > 0 && rows[0].value === "cloud") {
+      return "cloud";
+    }
+    return "local";
+  },
+
+  async setAiEngine(engine: "local" | "cloud"): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_engine', $1)",
+      [engine]
+    );
+  },
+
+  async getCloudProvider(): Promise<"anthropic" | "openai"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'cloud_provider'");
+    if (rows.length > 0 && rows[0].value === "openai") {
+      return "openai";
+    }
+    return "anthropic";
+  },
+
+  async setCloudProvider(provider: "anthropic" | "openai"): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_provider', $1)",
+      [provider]
+    );
+  },
+
+  async getCloudModel(provider: "anthropic" | "openai"): Promise<string> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = $1",
+      [`cloud_model_${provider}`]
+    );
+    if (rows.length > 0 && rows[0].value.trim()) {
+      return rows[0].value;
+    }
+    return provider === "openai" ? "gpt-4o" : "claude-sonnet-4-6";
+  },
+
+  async setCloudModel(provider: "anthropic" | "openai", model: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)",
+      [`cloud_model_${provider}`, model]
+    );
+  },
+
+  // Last known cloud reachability ("ok" | "failed" | ""), used by the engine badge
+  async getCloudLastStatus(): Promise<string> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'cloud_last_status'");
+    return rows.length > 0 ? rows[0].value : "";
+  },
+
+  async setCloudLastStatus(status: "ok" | "failed" | ""): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('cloud_last_status', $1)",
+      [status]
+    );
   }
 };
 
@@ -691,6 +764,11 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("retention_days", "30");
   await checkAndSeed("chat_model", "llama3.2:3b");
   await checkAndSeed("embedding_model", "nomic-embed-text");
+  await checkAndSeed("ai_engine", "local"); // local stays the default engine
+  await checkAndSeed("cloud_provider", "anthropic");
+  await checkAndSeed("cloud_model_anthropic", "claude-sonnet-4-6");
+  await checkAndSeed("cloud_model_openai", "gpt-4o");
+  await checkAndSeed("cloud_last_status", "");
 
   // Delete existing mislabeled 'loginwindow' captures
   try {
