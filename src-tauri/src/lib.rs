@@ -27,6 +27,10 @@ extern "C" {
     fn ffi_request_accessibility_permission() -> bool;
     #[link_name = "is_screen_locked"]
     fn ffi_is_screen_locked() -> bool;
+    #[link_name = "check_screen_recording_permission"]
+    fn ffi_check_screen_recording_permission() -> bool;
+    #[link_name = "request_screen_recording_permission"]
+    fn ffi_request_screen_recording_permission() -> bool;
 }
 
 #[derive(Clone, Serialize)]
@@ -190,6 +194,38 @@ fn has_accessibility_permission() -> bool {
 #[tauri::command]
 fn request_accessibility_permission() -> bool {
     unsafe { ffi_request_accessibility_permission() }
+}
+
+#[tauri::command]
+fn has_screen_recording_permission() -> bool {
+    unsafe { ffi_check_screen_recording_permission() }
+}
+
+#[tauri::command]
+fn request_screen_recording_permission() -> bool {
+    unsafe { ffi_request_screen_recording_permission() }
+}
+
+/// Open the matching macOS System Settings privacy pane.
+#[tauri::command]
+fn open_privacy_settings(pane: String) -> Result<(), String> {
+    let url = match pane.as_str() {
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "screen_recording" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        "automation" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        }
+        other => return Err(format!("Unknown privacy pane '{}'", other)),
+    };
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -735,6 +771,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       has_accessibility_permission,
       request_accessibility_permission,
+      has_screen_recording_permission,
+      request_screen_recording_permission,
+      open_privacy_settings,
       set_capture_paused,
       is_capture_paused,
       update_privacy_settings,

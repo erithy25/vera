@@ -101,6 +101,20 @@ bool is_screen_locked(void) {
     return locked;
 }
 
+bool check_screen_recording_permission(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGPreflightScreenCaptureAccess();
+    }
+    return true;
+}
+
+bool request_screen_recording_permission(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGRequestScreenCaptureAccess();
+    }
+    return true;
+}
+
 bool check_accessibility_permission() {
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wdeprecated-declarations"

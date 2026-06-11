@@ -4,6 +4,7 @@ import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "l
 import { activityRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { retrieveRelevantCaptures } from "../lib/retrieval";
+import { useUserProfile } from "../lib/useUserProfile";
 
 interface SourceReference {
   app_name: string;
@@ -49,6 +50,7 @@ export const CommandBar: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [engineState, setEngineState] = useState<"local" | "cloud">("local");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { initials: userInitials } = useUserProfile();
 
   // Max conversation turns to send to the model (each turn = 1 user + 1 assistant)
   const MAX_HISTORY_TURNS = 10;
@@ -445,7 +447,7 @@ Rules:
                   <div className="flex gap-3 items-start w-full">
                     <div className="w-7 h-7 rounded-full bg-active-hover border border-border-hairline flex items-center justify-center shrink-0 mt-0.5">
                       <span className="font-sans text-[10px] font-semibold text-text-primary">
-                        TM
+                        {userInitials}
                       </span>
                     </div>
                     <div className="flex-1 font-sans text-[14px] text-text-primary leading-relaxed pt-1 select-text">

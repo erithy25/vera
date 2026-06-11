@@ -6,6 +6,7 @@ import { Knowledge } from "./components/Knowledge";
 import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
 import { Goals } from "./components/Goals";
+import { Onboarding } from "./components/Onboarding";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
@@ -89,6 +90,7 @@ const PlaceholderPage: React.FC<{ title: string }> = ({ title }) => {
 function App() {
   const [currentView, setCurrentView] = useState<string>("Dashboard");
   const [dbReady, setDbReady] = useState<boolean>(false);
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
 
   useEffect(() => {
     async function initDb() {
@@ -96,6 +98,11 @@ function App() {
         await seedDatabaseIfEmpty();
         await initializeDefaultSettings();
         await pruneOldCaptures();
+        try {
+          setOnboardingComplete(await settingsRepo.getOnboardingComplete());
+        } catch (err) {
+          console.error("Failed to read onboarding flag:", err);
+        }
         setDbReady(true);
         // Run embedding backfill in background
         backfillEmbeddings();
@@ -106,6 +113,13 @@ function App() {
       }
     }
     initDb();
+  }, []);
+
+  // "Re-run onboarding" from Settings resets the flag and shows the flow again
+  useEffect(() => {
+    const onReset = () => setOnboardingComplete(false);
+    window.addEventListener("onboarding-reset", onReset);
+    return () => window.removeEventListener("onboarding-reset", onReset);
   }, []);
 
   // Clicking an agent on the Dashboard card switches to the Agents view
@@ -177,6 +191,11 @@ function App() {
       clearInterval(refreshInterval);
     };
   }, []);
+
+  // First-run onboarding takes over the whole window until completed
+  if (dbReady && onboardingComplete === false) {
+    return <Onboarding onComplete={() => setOnboardingComplete(true)} />;
+  }
 
   return (
     <div className="flex w-full min-h-screen bg-bg-warm font-sans text-text-primary">

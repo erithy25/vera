@@ -14,8 +14,9 @@ import {
   Trash2,
   ChevronsUpDown
 } from "lucide-react";
-import { navItems, userProfile } from "../lib/config";
+import { navItems } from "../lib/config";
 import { notesRepo, DbNote } from "../lib/db";
+import { useUserProfile } from "../lib/useUserProfile";
 
 interface SidebarProps {
   currentView: string;
@@ -24,6 +25,8 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, dbReady }) => {
+  const { name: userName, initials: userInitials } = useUserProfile();
+
   // Navigation Icon Mapper
   const getIcon = (iconName: string) => {
     switch (iconName) {
@@ -317,15 +320,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, d
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-active-hover flex items-center justify-center border border-border-hairline">
             <span className="font-sans text-[13px] font-semibold text-text-primary">
-              {userProfile.initials}
+              {userInitials}
             </span>
           </div>
           <div className="flex flex-col">
             <span className="font-sans text-[13px] font-medium text-text-primary leading-tight">
-              {userProfile.name}
+              {userName.trim() || "You"}
             </span>
             <span className="font-sans text-[11px] text-text-faint">
-              {userProfile.plan}
+              Local
             </span>
           </div>
         </div>

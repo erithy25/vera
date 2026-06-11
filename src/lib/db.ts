@@ -697,6 +697,38 @@ export const settingsRepo = {
     );
   },
 
+  // --- Profile & onboarding ---
+
+  async getUserName(): Promise<string> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'user_name'");
+    return rows.length > 0 ? rows[0].value : "";
+  },
+
+  async setUserName(name: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('user_name', $1)",
+      [name]
+    );
+  },
+
+  async getOnboardingComplete(): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'onboarding_complete'"
+    );
+    return rows.length > 0 && rows[0].value === "true";
+  },
+
+  async setOnboardingComplete(complete: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_complete', $1)",
+      [complete ? "true" : "false"]
+    );
+  },
+
   // Last known cloud reachability ("ok" | "failed" | ""), used by the engine badge
   async getCloudLastStatus(): Promise<string> {
     const db = await getDb();
@@ -802,6 +834,8 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("cloud_model_anthropic", "claude-sonnet-4-6");
   await checkAndSeed("cloud_model_openai", "gpt-4o");
   await checkAndSeed("cloud_last_status", "");
+  await checkAndSeed("user_name", "");
+  await checkAndSeed("onboarding_complete", "false");
 
   // Delete existing mislabeled 'loginwindow' captures
   try {

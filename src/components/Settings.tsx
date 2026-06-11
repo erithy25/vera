@@ -17,6 +17,11 @@ export const Settings: React.FC = () => {
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
   const [retentionDays, setRetentionDays] = useState<string>("30");
 
+  // Profile + macOS permission status
+  const [userName, setUserNameState] = useState<string>("");
+  const [permAccessibility, setPermAccessibility] = useState<boolean>(false);
+  const [permScreenRecording, setPermScreenRecording] = useState<boolean>(false);
+
   // AI Engine state (local by default; cloud is bring-your-own-key)
   const [aiEngine, setAiEngine] = useState<AiEngine>("local");
   const [cloudProvider, setCloudProviderState] = useState<CloudProvider>("anthropic");
@@ -60,7 +65,7 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider] = await Promise.all([
+      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
         settingsRepo.getCapturePaused(),
         settingsRepo.getExcludedApps(),
         settingsRepo.getExcludedDomains(),
@@ -70,6 +75,7 @@ export const Settings: React.FC = () => {
         settingsRepo.getEmbeddingModel(),
         settingsRepo.getAiEngine(),
         settingsRepo.getCloudProvider(),
+        settingsRepo.getUserName(),
       ]);
 
       setIsPaused(paused);
@@ -81,6 +87,7 @@ export const Settings: React.FC = () => {
       setEmbeddingModel(dbEmbed);
       setAiEngine(engine);
       setCloudProviderState(provider);
+      setUserNameState(name);
       setCloudModelState(await settingsRepo.getCloudModel(provider));
       setKeySaved(await invoke<boolean>("has_cloud_api_key", { provider }));
 
@@ -97,9 +104,58 @@ export const Settings: React.FC = () => {
     }
   };
 
+  const refreshPermissions = async () => {
+    try {
+      const [ax, sr] = await Promise.all([
+        invoke<boolean>("has_accessibility_permission"),
+        invoke<boolean>("has_screen_recording_permission"),
+      ]);
+      setPermAccessibility(ax);
+      setPermScreenRecording(sr);
+    } catch (err) {
+      console.error("Failed to check macOS permissions:", err);
+    }
+  };
+
   useEffect(() => {
     loadSettings();
+    refreshPermissions();
+    // Re-check when the user returns from System Settings
+    const onFocus = () => refreshPermissions();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  const handleSaveUserName = async (val: string) => {
+    try {
+      await settingsRepo.setUserName(val.trim());
+      window.dispatchEvent(new CustomEvent("profile-updated"));
+    } catch (err) {
+      console.error("Failed to save user name:", err);
+    }
+  };
+
+  const handleRerunOnboarding = async () => {
+    try {
+      await settingsRepo.setOnboardingComplete(false);
+      window.dispatchEvent(new CustomEvent("onboarding-reset"));
+    } catch (err) {
+      console.error("Failed to reset onboarding:", err);
+    }
+  };
+
+  const handleOpenPrivacyPane = async (pane: "accessibility" | "screen_recording") => {
+    try {
+      if (pane === "accessibility") {
+        await invoke("request_accessibility_permission");
+      } else {
+        await invoke("request_screen_recording_permission");
+      }
+      await invoke("open_privacy_settings", { pane });
+    } catch (err) {
+      console.error("Failed to open privacy settings:", err);
+    }
+  };
 
   const handleEngineChange = async (engine: AiEngine) => {
     setAiEngine(engine);
@@ -752,6 +808,35 @@ export const Settings: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* Profile Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-serif text-[17px] font-normal text-text-primary">
+                Profile
+              </span>
+              <span className="font-sans text-[12px] text-text-faint">
+                Your name, shown in the sidebar and your chats
+              </span>
+            </div>
+
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => setUserNameState(e.target.value)}
+              onBlur={() => handleSaveUserName(userName)}
+              placeholder="Your name"
+              className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none placeholder:text-text-faint"
+            />
+
+            <button
+              onClick={handleRerunOnboarding}
+              className="self-start flex items-center gap-1.5 px-3 py-1.5 border border-border-hairline rounded-xl font-sans text-[12px] font-medium text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer"
+            >
+              <RotateCcw size={13} strokeWidth={1.5} />
+              Re-run onboarding
+            </button>
+          </div>
         </div>
 
         {/* Right Column: Exclusions list */}
@@ -857,6 +942,74 @@ export const Settings: React.FC = () => {
                   No excluded domains configured
                 </span>
               )}
+            </div>
+          </div>
+
+          {/* macOS Permissions Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-0.5">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  macOS Permissions
+                </span>
+                <span className="font-sans text-[12px] text-text-faint">
+                  What Vera is currently allowed to see
+                </span>
+              </div>
+              <button
+                onClick={refreshPermissions}
+                className="px-3 py-1.5 border border-border-hairline rounded-xl text-[11px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer uppercase font-semibold"
+              >
+                Refresh
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {[
+                {
+                  label: "Accessibility",
+                  hint: "Activity tracking (active app & window)",
+                  granted: permAccessibility,
+                  pane: "accessibility" as const,
+                },
+                {
+                  label: "Screen Recording",
+                  hint: "Screen memory captures",
+                  granted: permScreenRecording,
+                  pane: "screen_recording" as const,
+                },
+              ].map((perm) => (
+                <div key={perm.pane} className="flex items-center gap-3">
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="font-sans text-[13px] font-medium text-text-primary">
+                      {perm.label}
+                    </span>
+                    <span className="font-sans text-[11px] text-text-faint">{perm.hint}</span>
+                  </div>
+                  <span
+                    className={`flex items-center gap-1.5 px-2.5 py-1 border rounded-full font-sans text-[11px] font-medium uppercase shrink-0 ${
+                      perm.granted
+                        ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600"
+                        : "border-amber-500/20 bg-amber-500/5 text-amber-600"
+                    }`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        perm.granted ? "bg-emerald-500" : "bg-amber-500 animate-pulse"
+                      }`}
+                    />
+                    {perm.granted ? "Granted" : "Not granted"}
+                  </span>
+                  {!perm.granted && (
+                    <button
+                      onClick={() => handleOpenPrivacyPane(perm.pane)}
+                      className="px-3 py-1.5 border border-text-primary rounded-xl font-sans text-[12px] font-medium text-text-primary hover:bg-active-hover transition-all cursor-pointer shrink-0"
+                    >
+                      Open Settings
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

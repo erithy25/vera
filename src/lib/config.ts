@@ -13,12 +13,6 @@ export const navItems: NavItem[] = [
   { label: "Settings", icon: "Settings", active: false },
 ];
 
-export const userProfile = {
-  name: "Taylor Morgan",
-  plan: "Pro Plan",
-  initials: "TM",
-};
-
 export interface AgentInfo {
   name: string;
   role: string;

@@ -10,6 +10,7 @@ import {
 import { parseAgentReply, VeraAction } from "../lib/agentActions";
 import { generateReply } from "../lib/engine";
 import { notesRepo, goalsRepo } from "../lib/db";
+import { useUserProfile } from "../lib/useUserProfile";
 
 interface AgentChatProps {
   agent: AgentSpec;
@@ -25,6 +26,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ agent, onBack }) => {
   const [history, setHistory] = useState<AgentHistoryEntry[]>(() => getAgentThread(agent.id));
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { initials: userInitials } = useUserProfile();
 
   // Keep the in-memory per-session thread in sync so the conversation
   // survives switching views (cleared on app restart by design)
@@ -268,7 +270,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ agent, onBack }) => {
                   <div className="flex gap-3 items-start w-full">
                     <div className="w-7 h-7 rounded-full bg-active-hover border border-border-hairline flex items-center justify-center shrink-0 mt-0.5">
                       <span className="font-sans text-[10px] font-semibold text-text-primary">
-                        TM
+                        {userInitials}
                       </span>
                     </div>
                     <div className="flex-1 font-sans text-[14px] text-text-primary leading-relaxed pt-1 select-text">
