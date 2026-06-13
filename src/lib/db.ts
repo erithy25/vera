@@ -123,11 +123,11 @@ export const notesRepo = {
     };
   },
 
-  async update(id: number, title: string): Promise<void> {
+  async update(id: number, title: string, body: string = ""): Promise<void> {
     const db = await getDb();
     await db.execute(
-      "UPDATE notes SET title = $1, updated_at = $2 WHERE id = $3",
-      [title, Date.now(), id]
+      "UPDATE notes SET title = $1, body = $2, updated_at = $3 WHERE id = $4",
+      [title, body, Date.now(), id]
     );
   },
 
@@ -834,21 +834,9 @@ export async function seedDatabaseIfEmpty() {
 
   const now = Date.now();
 
-  // 1. Seed Quick Notes
-  await db.execute(
-    "INSERT INTO notes (title, body, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-    ["Project brainstorm", "", now - 2 * 60 * 1000, now - 2 * 60 * 1000]
-  );
-  await db.execute(
-    "INSERT INTO notes (title, body, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-    ["Ideas for newsletter", "", now - 60 * 60 * 1000, now - 60 * 60 * 1000]
-  );
-  await db.execute(
-    "INSERT INTO notes (title, body, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-    ["Book recommendations", "", now - 3 * 60 * 60 * 1000, now - 3 * 60 * 60 * 1000]
-  );
+  // Quick Notes start empty — the user (or an agent) creates real notes.
 
-  // 2. Seed Daily Goal
+  // Seed Daily Goal
   await db.execute(
     "INSERT INTO goals (title, target_minutes, created_at) VALUES ($1, $2, $3)",
     ["Daily Focus", 480, now]
@@ -909,6 +897,25 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("user_name", "");
   await checkAndSeed("onboarding_complete", "false");
   await checkAndSeed("app_lock_enabled", "false");
+
+  // One-time removal of the old seeded placeholder notes (empty-body samples).
+  // Title + empty-body match, so a note the user actually edited is preserved.
+  const placeholderPurge = await db.select<any[]>(
+    "SELECT value FROM settings WHERE key = 'placeholder_notes_purged'"
+  );
+  if (placeholderPurge.length === 0) {
+    try {
+      await db.execute(
+        "DELETE FROM notes WHERE (body IS NULL OR body = '') AND title IN ('Project brainstorm', 'Ideas for newsletter', 'Book recommendations')"
+      );
+      console.log("[Vera DB] Purged legacy placeholder Quick Notes.");
+    } catch (err) {
+      console.error("Failed to purge placeholder notes:", err);
+    }
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('placeholder_notes_purged', 'true')"
+    );
+  }
 
   // Delete existing mislabeled 'loginwindow' captures
   try {
