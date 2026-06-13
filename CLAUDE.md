@@ -7,10 +7,10 @@ Tauri 2 desktop app (macOS-only: Objective-C/Swift natives, CoreGraphics/AppKit)
 - **After EVERY change**: end the reply with the install command so the user can rebuild and drag the updated app into /Applications:
 
   ```bash
-  git pull origin <current-branch> && npm run tauri build && open src-tauri/target/release/bundle/dmg/*.dmg
+  git pull origin <current-branch> && npm install && npm run tauri build && open src-tauri/target/release/bundle/dmg/*.dmg
   ```
 
-  (Insert the current working branch. The DMG opens the drag-into-Applications window.)
+  (Insert the current working branch. `npm install` is included so new JS deps are present — `tauri build` does not install them. The `beforeBuildCommand` also runs `npm install` as a safety net. The DMG opens the drag-into-Applications window.)
 - No UI/design changes unless explicitly requested.
 - Develop on the designated claude/* branch; commit and push after each task.
 - The app only compiles on macOS (frameworks + swiftc). In Linux containers: verify the frontend with `npx tsc --noEmit` + `npm run build`, and prove native/SQL logic with standalone replica tests.
