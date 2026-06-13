@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./components/Dashboard";
@@ -76,19 +76,6 @@ async function handleNewCaptureEmbedding(captureId: number, ocrText: string) {
     console.error(`[Vera AI] Failed to generate embedding for capture ${captureId}:`, err);
   }
 }
-
-const PlaceholderPage: React.FC<{ title: string }> = ({ title }) => {
-  return (
-    <div className="w-full max-w-[1100px] flex flex-col items-center gap-4 px-8 pb-16 mt-12 select-none">
-      <h1 className="font-serif text-[48px] font-normal text-text-primary tracking-tight text-center">
-        {title}
-      </h1>
-      <span className="font-sans text-[14px] text-text-muted italic">
-        Coming soon
-      </span>
-    </div>
-  );
-};
 
 function App() {
   const [currentView, setCurrentView] = useState<string>("Dashboard");
@@ -293,7 +280,7 @@ function App() {
             ) : currentView === "Settings" ? (
               <Settings />
             ) : (
-              <PlaceholderPage title={currentView} />
+              <Dashboard />
             )
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center min-h-[300px]">

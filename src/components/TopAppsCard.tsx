@@ -62,6 +62,11 @@ export const TopAppsCard: React.FC = () => {
 
       {/* App rows */}
       <div className="flex flex-col gap-4 mt-3 flex-1 justify-center">
+        {apps.length === 0 && (
+          <span className="font-sans text-[13px] text-text-faint italic text-center">
+            No activity tracked yet today
+          </span>
+        )}
         {apps.map((app) => {
           const widthPercent = (app.minutes / maxMinutes) * 100;
           return (

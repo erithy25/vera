@@ -6,7 +6,6 @@ import {
   BookOpen,
   Target,
   Settings,
-  Sparkle,
   Play,
   Pause,
   RotateCcw,
@@ -55,7 +54,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, d
   const [isTimerRunning, setIsTimerRunning] = useState(false);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
     if (isTimerRunning) {
       interval = setInterval(() => {
         setTimeLeft((prev) => {

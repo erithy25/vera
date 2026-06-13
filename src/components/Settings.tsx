@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, X, Shield, ShieldAlert, Trash2, EyeOff, RotateCcw } from "lucide-react";
+import { Plus, X, Shield, ShieldAlert, Trash2, RotateCcw } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";

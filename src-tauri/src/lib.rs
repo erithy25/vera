@@ -298,6 +298,46 @@ fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+/// One-time copy of the database from the previous bundle identifier's data
+/// dir to the current one, so the user's notes/goals/captures/activity survive
+/// the com.vera.app -> app.vera.desktop change. macOS resolves the app data
+/// dir as ~/Library/Application Support/<identifier>. Computed from $HOME (not
+/// the AppHandle) and called before the Builder, so it runs before the sql
+/// plugin can touch the new path. Idempotent: copies only when the new dir has
+/// no vera.db yet and the old one does.
+fn migrate_legacy_database() {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let support = std::path::Path::new(&home)
+        .join("Library")
+        .join("Application Support");
+    let new_dir = support.join("app.vera.desktop");
+    if new_dir.join("vera.db").exists() {
+        return; // already migrated, or the user already has data here
+    }
+    let old_dir = support.join("com.vera.app");
+    if !old_dir.join("vera.db").exists() {
+        return; // fresh install — nothing to migrate
+    }
+    if let Err(e) = std::fs::create_dir_all(&new_dir) {
+        println!("[Vera Migrate] could not create new data dir: {}", e);
+        return;
+    }
+    // Copy the main DB plus any WAL/SHM sidecar files so no committed data is lost
+    for name in ["vera.db", "vera.db-wal", "vera.db-shm"] {
+        let src = old_dir.join(name);
+        if src.exists() {
+            match std::fs::copy(&src, new_dir.join(name)) {
+                Ok(_) => println!("[Vera Migrate] copied {}", name),
+                Err(e) => println!("[Vera Migrate] failed to copy {}: {}", name, e),
+            }
+        }
+    }
+    println!("[Vera Migrate] database carried over from com.vera.app to app.vera.desktop");
+}
+
 /// Open the matching macOS System Settings privacy pane.
 #[tauri::command]
 fn open_privacy_settings(pane: String) -> Result<(), String> {
@@ -853,6 +893,10 @@ fn cleanup_system_process_rows(db_path: &std::path::Path) -> Result<(usize, Vec<
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // Carry existing data across the bundle-identifier change before anything
+  // (including the sql plugin) can touch the new data directory.
+  migrate_legacy_database();
+
   let migrations = vec![
     Migration {
       version: 1,
@@ -930,7 +974,7 @@ pub fn run() {
       settings: Mutex::new(PrivacySettings {
         paused: true, // Secure default on startup
         excluded_apps: vec![
-            "com.vera.app".to_string(), // never capture Vera itself
+            "app.vera.desktop".to_string(), // never capture Vera itself
             "1Password".to_string(),
             "Bitwarden".to_string(),
             "Keychain Access".to_string(),
@@ -1121,7 +1165,7 @@ pub fn run() {
               }
 
               // Exclude Vera itself
-              if app_name == "Vera" || app_name == "vera" || bundle_id == "com.vera.app" {
+              if app_name == "Vera" || app_name == "vera" || bundle_id == "app.vera.desktop" {
                   continue;
               }
 
@@ -1396,7 +1440,7 @@ fn thread_loop_tick(
     }
 
     // Exclude Vera itself and system UI processes (loginwindow, screensaver, dock, ...)
-    let is_vera = app_name == "Vera" || app_name == "vera" || bundle_id == "com.vera.app";
+    let is_vera = app_name == "Vera" || app_name == "vera" || bundle_id == "app.vera.desktop";
     if is_vera || is_system_process(&app_name, &bundle_id) {
         if let Some(prev_app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);

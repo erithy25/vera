@@ -46,7 +46,7 @@ Task {
         var captureWidth: Int
         var captureHeight: Int
 
-        let veraBundleId = "com.vera.app"
+        let veraBundleId = "app.vera.desktop"
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         let frontmostPid = frontmostApp?.processIdentifier
 
