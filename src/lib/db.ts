@@ -783,6 +783,23 @@ export const settingsRepo = {
     );
   },
 
+  // Mirror of the OS "start at login" state (the OS Login Items is the truth).
+  async getAutostartEnabled(): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'autostart_enabled'"
+    );
+    return rows.length > 0 && rows[0].value === "true";
+  },
+
+  async setAutostartEnabled(enabled: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('autostart_enabled', $1)",
+      [enabled ? "true" : "false"]
+    );
+  },
+
   // Last known cloud reachability ("ok" | "failed" | ""), used by the engine badge
   async getCloudLastStatus(): Promise<string> {
     const db = await getDb();
@@ -878,6 +895,7 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("cloud_last_status", "");
   await checkAndSeed("user_name", "");
   await checkAndSeed("onboarding_complete", "false");
+  await checkAndSeed("autostart_enabled", "false");
 
   // One-time removal of the old seeded placeholder notes (empty-body samples).
   // Title + empty-body match, so a note the user actually edited is preserved.

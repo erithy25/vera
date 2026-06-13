@@ -22,14 +22,18 @@ cc = "1.0"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.2", features = [] }
+tauri = { version = "2.11.2", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 # Direct sqlite access for the startup cleanup and cloud-key storage
 # (same libsqlite3-sys 0.30 as sqlx/tauri-plugin-sql)
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Cloud engine HTTP calls (Anthropic / OpenAI / Ollama non-streaming)
 reqwest = { version = "0.12", features = ["json"] }
+# Sensitive-data redaction for backend-side capture persistence
+regex = "1"

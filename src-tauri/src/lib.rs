@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
 use std::sync::Mutex;
+use rusqlite::OptionalExtension;
 
 #[repr(C)]
 pub struct AppActivity {
@@ -34,15 +35,6 @@ extern "C" {
 }
 
 #[derive(Clone, Serialize)]
-struct ActivitySegmentPayload {
-    app_name: String,
-    window_title: Option<String>,
-    started_at: u64,
-    duration_seconds: u64,
-    category: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
 struct CapturePayload {
     app_name: String,
     window_title: Option<String>,
@@ -60,6 +52,12 @@ struct PrivacySettings {
 
 struct PrivacyState {
     settings: Mutex<PrivacySettings>,
+}
+
+// Handle to the tray's capture-toggle menu item, so its label can be kept in
+// sync with the capture-paused state from anywhere (tray click or in-app).
+struct TrayHandles {
+    pause_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
 }
 
 // Capture quality gates: skip captures without substantive content and
@@ -259,6 +257,214 @@ fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+// ---------- Backend-side capture/activity persistence ----------
+// Capture and activity are now written to SQLite directly from the background
+// threads (via rusqlite, the same pattern already used by the startup cleanup
+// and cloud-key storage), so persistence no longer depends on the webview and
+// keeps running when the window is hidden or closed.
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Port of isLuhnValid (src/lib/db.ts).
+fn is_luhn_valid(s: &str) -> bool {
+    let mut sum = 0u32;
+    let mut double = false;
+    for c in s.chars().rev() {
+        let d = match c.to_digit(10) {
+            Some(d) => d,
+            None => return false,
+        };
+        let mut d = d;
+        if double {
+            d *= 2;
+            if d > 9 {
+                d -= 9;
+            }
+        }
+        sum += d;
+        double = !double;
+    }
+    sum % 10 == 0
+}
+
+/// Port of redactSensitiveData (src/lib/db.ts). Regex literals are compiled
+/// with `.ok()` so a (theoretically impossible) bad pattern can never panic.
+fn redact_sensitive_data(text: &str) -> String {
+    let mut out = text.to_string();
+
+    // 1. Credit cards (13–16 digits, optional spaces/hyphens), Luhn-validated
+    if let Ok(re) = regex::Regex::new(r"\b(?:\d[ -]?){13,16}\b") {
+        out = re
+            .replace_all(&out, |caps: &regex::Captures| {
+                let m = caps.get(0).map(|x| x.as_str()).unwrap_or("");
+                let clean: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+                if is_luhn_valid(&clean) {
+                    "[redacted]".to_string()
+                } else {
+                    m.to_string()
+                }
+            })
+            .into_owned();
+    }
+    // 2. IBANs
+    if let Ok(re) = regex::Regex::new(r"(?i)\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b") {
+        out = re.replace_all(&out, "[redacted]").into_owned();
+    }
+    // 3. Long all-digit runs (account/IDs/phone lists)
+    if let Ok(re) = regex::Regex::new(r"\b\d{10,}\b") {
+        out = re.replace_all(&out, "[redacted]").into_owned();
+    }
+    // 4. API keys / tokens
+    let patterns = [
+        r"sk-(proj-)?[a-zA-Z0-9]{48,}",
+        r"rk_live_[a-zA-Z0-9]{24}",
+        r"sk_live_[a-zA-Z0-9]{24}",
+        r"ghp_[a-zA-Z0-9]{36,}",
+        r"AKIA[0-9A-Z]{16}",
+        r#"(?i)\b(?:bearer|token|password|secret|passwd|auth[_-]?token)\s*[:=]\s*["']?[a-zA-Z0-9_\-\.]{16,}["']?"#,
+    ];
+    for p in patterns {
+        if let Ok(re) = regex::Regex::new(p) {
+            out = re.replace_all(&out, "[redacted]").into_owned();
+        }
+    }
+    out
+}
+
+/// Port of categorizeApp (src/lib/db.ts).
+fn categorize_app(app_name: &str) -> String {
+    let n = app_name.to_lowercase();
+    let has = |k: &str| n.contains(k);
+    if has("code") || has("xcode") || has("terminal") || has("warp") || has("iterm") || has("developer") {
+        "code".to_string()
+    } else if has("figma") || has("sketch") || has("photoshop") || has("illustrator") || has("framer") {
+        "design".to_string()
+    } else if has("notion") || has("obsidian") || has("word") || has("pages") || has("textedit") || has("book") || has("reader") {
+        "docs".to_string()
+    } else if has("message") || has("slack") || has("mail") || has("discord") || has("whatsapp") || has("telegram") {
+        "comms".to_string()
+    } else if has("zoom") || has("meet") || has("facetime") || has("teams") || has("webex") {
+        "meeting".to_string()
+    } else if has("arc") || has("chrome") || has("safari") || has("firefox") || has("edge") || has("browser") {
+        "browser".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+/// Name-only system-process guard (mirrors isSystemProcessName in db.ts).
+fn is_system_process_name(app_name: &str) -> bool {
+    let n = app_name.to_lowercase();
+    SYSTEM_PROCESS_BLOCKLIST.contains(&n.as_str()) || n.contains("loginwindow")
+}
+
+fn open_vera_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
+    let path = resolve_db_path(app).ok_or_else(|| "vera.db not found yet".to_string())?;
+    let conn = rusqlite::Connection::open(&path).map_err(|e| format!("open db: {}", e))?;
+    let _ = conn.busy_timeout(Duration::from_millis(5000));
+    Ok(conn)
+}
+
+/// Insert one screen capture directly into SQLite, applying redaction when the
+/// setting is on. Returns an error string instead of panicking.
+fn persist_capture(
+    app: &tauri::AppHandle,
+    app_name: &str,
+    window_title: Option<&str>,
+    ocr_text: &str,
+) -> Result<(), String> {
+    let conn = open_vera_db(app)?;
+    let redaction_enabled = read_setting(&conn, "redaction_enabled")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    let stored = if redaction_enabled {
+        redact_sensitive_data(ocr_text)
+    } else {
+        ocr_text.to_string()
+    };
+    let char_count = stored.chars().count() as i64;
+    conn.execute(
+        "INSERT INTO captures (captured_at, app_name, window_title, ocr_text, char_count, embedding) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+        rusqlite::params![now_epoch_ms() as i64, app_name, window_title, stored, char_count],
+    )
+    .map_err(|e| format!("insert capture: {}", e))?;
+    Ok(())
+}
+
+/// Upsert one activity segment directly into SQLite (mirrors insertEvent).
+fn persist_activity_segment(
+    app: &tauri::AppHandle,
+    app_name: &str,
+    window_title: Option<&str>,
+    started_at: u64,
+    duration_seconds: u64,
+) -> Result<(), String> {
+    if is_system_process_name(app_name) {
+        return Ok(());
+    }
+    let conn = open_vera_db(app)?;
+    let category = categorize_app(app_name);
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM activity_events WHERE app_name = ?1 \
+             AND (window_title = ?2 OR (window_title IS NULL AND ?2 IS NULL)) AND started_at = ?3",
+            rusqlite::params![app_name, window_title, started_at as i64],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("query activity: {}", e))?;
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE activity_events SET duration_seconds = ?1 WHERE id = ?2",
+            rusqlite::params![duration_seconds as i64, id],
+        )
+        .map_err(|e| format!("update activity: {}", e))?;
+    } else {
+        conn.execute(
+            "INSERT INTO activity_events (app_name, window_title, started_at, duration_seconds, category) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![app_name, window_title, started_at as i64, duration_seconds as i64, category],
+        )
+        .map_err(|e| format!("insert activity: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Store an activity segment and notify the UI. No-ops on zero duration.
+fn store_segment(
+    app_handle: &tauri::AppHandle,
+    app_name: String,
+    window_title: Option<String>,
+    started_at: u64,
+    duration_seconds: u64,
+) {
+    if duration_seconds == 0 {
+        return;
+    }
+    match persist_activity_segment(app_handle, &app_name, window_title.as_deref(), started_at, duration_seconds) {
+        Ok(()) => {
+            let _ = app_handle.emit("activity-stored", ());
+        }
+        Err(e) => eprintln!("[Vera Activity] persist failed: {}", e),
+    }
+}
+
+/// Persist the capture-paused flag so the frontend reflects tray-driven changes.
+fn persist_capture_paused(app: &tauri::AppHandle, paused: bool) {
+    if let Ok(conn) = open_vera_db(app) {
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('capture_paused', ?1)",
+            rusqlite::params![if paused { "true" } else { "false" }],
+        );
+    }
+}
+
 /// One-time copy of the database from the previous bundle identifier's data
 /// dir to the current one, so the user's notes/goals/captures/activity survive
 /// the com.vera.app -> app.vera.desktop change. macOS resolves the app data
@@ -321,11 +527,24 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn set_capture_paused(state: tauri::State<'_, PrivacyState>, paused: bool) {
-    if let Ok(mut settings) = state.settings.lock() {
+/// Single source of truth for the capture-paused flag: updates the in-memory
+/// PrivacyState (which the capture thread reads), persists it, and updates the
+/// tray menu item text so the tray and the app never drift apart.
+fn apply_pause(app: &tauri::AppHandle, paused: bool) {
+    if let Ok(mut settings) = app.state::<PrivacyState>().settings.lock() {
         settings.paused = paused;
     }
+    persist_capture_paused(app, paused);
+    if let Ok(guard) = app.state::<TrayHandles>().pause_item.lock() {
+        if let Some(item) = guard.as_ref() {
+            let _ = item.set_text(if paused { "Resume capture" } else { "Pause capture" });
+        }
+    }
+}
+
+#[tauri::command]
+fn set_capture_paused(app: tauri::AppHandle, paused: bool) {
+    apply_pause(&app, paused);
 }
 
 #[tauri::command]
@@ -339,22 +558,21 @@ fn is_capture_paused(state: tauri::State<'_, PrivacyState>) -> bool {
 
 #[tauri::command]
 fn update_privacy_settings(
-    state: tauri::State<'_, PrivacyState>,
+    app: tauri::AppHandle,
     paused: bool,
     excluded_apps: Vec<String>,
     excluded_domains: Vec<String>,
 ) {
-    if let Ok(mut settings) = state.settings.lock() {
-        settings.paused = paused;
+    if let Ok(mut settings) = app.state::<PrivacyState>().settings.lock() {
         settings.excluded_apps = excluded_apps;
         settings.excluded_domains = excluded_domains;
         println!(
-            "[Vera Privacy] Settings updated: paused={}, excluded_apps count={}, excluded_domains count={}",
-            paused,
+            "[Vera Privacy] Settings updated: excluded_apps count={}, excluded_domains count={}",
             settings.excluded_apps.len(),
             settings.excluded_domains.len()
         );
     }
+    apply_pause(&app, paused);
 }
 
 // ---------- AI engine: local Ollama (default) or bring-your-own-key cloud ----------
@@ -852,6 +1070,70 @@ fn cleanup_system_process_rows(db_path: &std::path::Path) -> Result<(usize, Vec<
     Ok((deleted, names))
 }
 
+/// Build the macOS menu-bar (tray) icon and its menu. The Dock icon is kept.
+fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let initially_paused = app
+        .state::<PrivacyState>()
+        .settings
+        .lock()
+        .map(|s| s.paused)
+        .unwrap_or(true);
+
+    let open_item = MenuItemBuilder::with_id("open", "Open Vera").build(app)?;
+    let pause_item = MenuItemBuilder::with_id(
+        "toggle_capture",
+        if initially_paused { "Resume capture" } else { "Pause capture" },
+    )
+    .build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Vera").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&open_item)
+        .item(&pause_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    // Keep the pause item so its label can be updated from tray or app.
+    if let Ok(mut guard) = app.state::<TrayHandles>().pause_item.lock() {
+        *guard = Some(pause_item.clone());
+    }
+
+    // The "V" mark as a monochrome template image (renders in light/dark menu bars).
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-v-template.png"))?;
+
+    let _tray = TrayIconBuilder::with_id("vera-tray")
+        .icon(icon)
+        .icon_as_template(true)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "open" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            "toggle_capture" => {
+                let new_paused = match app.state::<PrivacyState>().settings.lock() {
+                    Ok(s) => !s.paused,
+                    Err(_) => return,
+                };
+                apply_pause(app, new_paused);
+                let _ = app.emit("capture-paused-changed", new_paused);
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // Carry existing data across the bundle-identifier change before anything
@@ -925,6 +1207,16 @@ pub fn run() {
   ];
 
   tauri::Builder::default()
+    // Single-instance must be registered first: a second launch (autostart +
+    // manual open) focuses the running instance instead of starting a second
+    // capture loop.
+    .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }))
     .plugin(
       tauri_plugin_sql::Builder::default()
         .add_migrations("sqlite:vera.db", migrations)
@@ -933,6 +1225,20 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None::<Vec<&str>>,
+    ))
+    // Closing the main window hides it; Vera keeps running (menu bar + capture).
+    // Cmd+Q and the tray "Quit Vera" item still exit fully.
+    .on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if window.label() == "main" {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        }
+    })
     .manage(PrivacyState {
       settings: Mutex::new(PrivacySettings {
         paused: true, // Secure default on startup
@@ -951,6 +1257,9 @@ pub fn run() {
         ],
         excluded_domains: Vec::new(),
       }),
+    })
+    .manage(TrayHandles {
+      pause_item: Mutex::new(None),
     })
     .invoke_handler(tauri::generate_handler![
       has_accessibility_permission,
@@ -974,6 +1283,13 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+
+      // Menu-bar (tray) icon. A failure here is logged but does not abort the
+      // app — Cmd+Q still quits, and capture still runs.
+      match build_tray(app) {
+          Ok(()) => {}
+          Err(e) => eprintln!("[Vera] Failed to create menu-bar tray: {}", e),
       }
 
       // Startup cleanup: purge system-process rows (loginwindow etc.) from the
@@ -1220,15 +1536,17 @@ pub fn run() {
                                               window_title.as_deref().map(|w| format!(" — {}", w)).unwrap_or_default()
                                           );
 
-                                          let payload = CapturePayload {
-                                              app_name: app_name.clone(),
-                                              window_title: window_title.clone(),
-                                              ocr_text: text,
-                                              char_count,
-                                              status: "Success".to_string(),
-                                              error: None,
-                                          };
-                                          let _ = app_handle_capture.emit("screen-capture", &payload);
+                                          // Persist on the backend so capture survives the window
+                                          // being hidden/closed; notify the UI to refresh + backfill.
+                                          match persist_capture(&app_handle_capture, &app_name, window_title.as_deref(), &text) {
+                                              Ok(()) => {
+                                                  let _ = app_handle_capture.emit("capture-stored", ());
+                                              }
+                                              Err(e) => {
+                                                  eprintln!("[Vera Capture] persist failed: {}", e);
+                                                  let _ = app_handle_capture.emit("capture-error", &e);
+                                              }
+                                          }
                                       } else if status == "Skipped" {
                                           // Sidecar declined to capture (e.g. Vera was frontmost).
                                           // Advance the markers so we don't re-spawn every tick.
@@ -1297,8 +1615,18 @@ pub fn run() {
 
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building Vera")
+    .run(|app_handle, event| {
+        // Clicking the Dock icon while the window is hidden reopens it.
+        if let tauri::RunEvent::Reopen { .. } = event {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }
+    });
 }
 
 fn thread_loop_tick(
@@ -1322,21 +1650,8 @@ fn thread_loop_tick(
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let active_end_ms = now_epoch_ms.saturating_sub((idle_seconds * 1000.0) as u64);
 
-            if active_end_ms > start {
-                let duration = (active_end_ms - start) / 1000;
-                if duration > 0 {
-                    let payload = ActivitySegmentPayload {
-                        app_name: app,
-                        window_title: current_window.take(),
-                        started_at: start,
-                        duration_seconds: duration,
-                        category: None,
-                    };
-                    let _ = app_handle.emit("activity-segment", &payload);
-                }
-            } else {
-                current_window.take();
-            }
+            let duration = if active_end_ms > start { (active_end_ms - start) / 1000 } else { 0 };
+            store_segment(app_handle, app, current_window.take(), start, duration);
         }
         return;
     }
@@ -1347,18 +1662,7 @@ fn thread_loop_tick(
         if let Some(app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
-            if duration > 0 {
-                let payload = ActivitySegmentPayload {
-                    app_name: app,
-                    window_title: current_window.take(),
-                    started_at: start,
-                    duration_seconds: duration,
-                    category: None,
-                };
-                let _ = app_handle.emit("activity-segment", &payload);
-            } else {
-                current_window.take();
-            }
+            store_segment(app_handle, app, current_window.take(), start, duration);
         }
         return;
     }
@@ -1397,18 +1701,7 @@ fn thread_loop_tick(
         if let Some(prev_app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
-            if duration > 0 {
-                let payload = ActivitySegmentPayload {
-                    app_name: prev_app,
-                    window_title: current_window.take(),
-                    started_at: start,
-                    duration_seconds: duration,
-                    category: None,
-                };
-                let _ = app_handle.emit("activity-segment", &payload);
-            } else {
-                current_window.take();
-            }
+            store_segment(app_handle, prev_app, current_window.take(), start, duration);
         }
         return;
     }
@@ -1423,18 +1716,7 @@ fn thread_loop_tick(
         if let Some(prev_app) = current_app.take() {
             let start = current_start_time.take().unwrap_or(now_epoch_ms);
             let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
-            if duration > 0 {
-                let payload = ActivitySegmentPayload {
-                    app_name: prev_app,
-                    window_title: current_window.take(),
-                    started_at: start,
-                    duration_seconds: duration,
-                    category: None,
-                };
-                let _ = app_handle.emit("activity-segment", &payload);
-            } else {
-                current_window.take();
-            }
+            store_segment(app_handle, prev_app, current_window.take(), start, duration);
         }
 
         // Start new session
@@ -1452,14 +1734,7 @@ fn thread_loop_tick(
                 let start = current_start_time.unwrap_or(now_epoch_ms);
                 let duration = (now_epoch_ms.saturating_sub(start)) / 1000;
                 if duration > 0 {
-                    let payload = ActivitySegmentPayload {
-                        app_name: app.clone(),
-                        window_title: current_window.clone(),
-                        started_at: start,
-                        duration_seconds: duration,
-                        category: None,
-                    };
-                    let _ = app_handle.emit("activity-segment", &payload);
+                    store_segment(app_handle, app.clone(), current_window.clone(), start, duration);
                 }
             }
             *last_flush_time = Instant::now();

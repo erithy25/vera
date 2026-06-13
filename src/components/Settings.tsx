@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { Plus, X, Shield, ShieldAlert, Trash2, RotateCcw } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
@@ -22,6 +23,11 @@ export const Settings: React.FC = () => {
   const [userName, setUserNameState] = useState<string>("");
   const [permAccessibility, setPermAccessibility] = useState<boolean>(false);
   const [permScreenRecording, setPermScreenRecording] = useState<boolean>(false);
+
+  // Start-at-login (autostart). The OS Login Items is the source of truth.
+  const [autostartOn, setAutostartOn] = useState<boolean>(false);
+  const [autostartBusy, setAutostartBusy] = useState<boolean>(false);
+  const [autostartError, setAutostartError] = useState<string | null>(null);
 
   // AI Engine state (local by default; cloud is bring-your-own-key)
   const [aiEngine, setAiEngine] = useState<AiEngine>("local");
@@ -121,11 +127,40 @@ export const Settings: React.FC = () => {
   useEffect(() => {
     loadSettings();
     refreshPermissions();
+    // Reflect the real OS Login Items state
+    isAutostartEnabled()
+      .then(setAutostartOn)
+      .catch((err) => console.error("Failed to read autostart state:", err));
     // Re-check when the user returns from System Settings
     const onFocus = () => refreshPermissions();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  const handleToggleAutostart = async () => {
+    if (autostartBusy) return;
+    setAutostartBusy(true);
+    setAutostartError(null);
+    const next = !autostartOn;
+    try {
+      if (next) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+      // Confirm against the real OS state rather than assuming
+      setAutostartOn(await isAutostartEnabled());
+      try {
+        await settingsRepo.setAutostartEnabled(next);
+      } catch (e) {
+        console.error("Failed to persist autostart pref:", e);
+      }
+    } catch (err) {
+      setAutostartError(errorToMessage(err));
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
 
   // Scroll to a section requested from the profile menu (on mount and on event)
   useEffect(() => {
@@ -853,6 +888,32 @@ export const Settings: React.FC = () => {
               <RotateCcw size={13} strokeWidth={1.5} />
               Re-run onboarding
             </button>
+          </div>
+
+          {/* Start at login */}
+          <div className="card-style p-5 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Start Vera at login
+                </span>
+                <span className="font-sans text-[12px] text-text-muted leading-normal">
+                  Launch Vera automatically when you log in, so it's always quietly running in the menu bar.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autostartOn}
+                onChange={handleToggleAutostart}
+                disabled={autostartBusy}
+                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
+              />
+            </div>
+            {autostartError && (
+              <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl font-sans text-[12px] text-amber-700 leading-normal">
+                {autostartError}
+              </div>
+            )}
           </div>
         </div>
 
