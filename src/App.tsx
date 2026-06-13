@@ -203,10 +203,14 @@ function App() {
           try {
             const { app_name, window_title, ocr_text, char_count, status } = event.payload;
             // Quality gates (mirror the backend): substantive content only,
-            // and no near-duplicate of the latest capture for this app
+            // and no near-duplicate of any of the recent captures (catches
+            // recurring banners/dialogs that pop over several apps)
             if (status === "Success" && char_count >= 64) {
-              const latest = await capturesRepo.latestForApp(app_name);
-              if (latest && tokenSimilarity(latest.ocr_text, ocr_text) > 0.85) {
+              const recent = await capturesRepo.recent(15);
+              const isDuplicate = recent.some(
+                (c) => tokenSimilarity(c.ocr_text, ocr_text) > 0.85
+              );
+              if (isDuplicate) {
                 return;
               }
               const insertId = await capturesRepo.insert({

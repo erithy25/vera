@@ -70,6 +70,24 @@ struct PrivacyState {
 // near-identical re-captures of static UI (sidebars, menus, tab strips).
 const MIN_CAPTURE_CHARS: usize = 64;
 const CAPTURE_SIMILARITY_SKIP: f64 = 0.85;
+// How many recent stored captures the dedup compares against. A wide window
+// means recurring notifications/banners (e.g. an iCloud banner that pops over
+// several apps) are stored once, not every time they reappear.
+const RECENT_CAPTURE_WINDOW: usize = 15;
+
+// Log a pre-spawn capture skip at most once per (reason, app) steady state, so
+// an excluded app staying frontmost is logged once instead of every 3s tick.
+fn log_capture_skip(last_skip_key: &mut Option<String>, reason: &str, app: &str) {
+    let key = format!("{}:{}", reason, app);
+    if last_skip_key.as_deref() != Some(key.as_str()) {
+        println!(
+            "[Vera Capture] SKIP ({}) — {}",
+            reason,
+            if app.is_empty() { "<unknown>" } else { app }
+        );
+        *last_skip_key = Some(key);
+    }
+}
 
 fn text_token_set(text: &str) -> std::collections::HashSet<String> {
     text.to_lowercase()
@@ -784,7 +802,7 @@ fn cleanup_low_value_captures(
         if near_dup {
             to_delete.push(id);
         } else {
-            if kept_recent.len() >= 5 {
+            if kept_recent.len() >= RECENT_CAPTURE_WINDOW {
                 kept_recent.remove(0);
             }
             kept_recent.push(tokens);
@@ -904,6 +922,7 @@ pub fn run() {
       settings: Mutex::new(PrivacySettings {
         paused: true, // Secure default on startup
         excluded_apps: vec![
+            "com.vera.app".to_string(), // never capture Vera itself
             "1Password".to_string(),
             "Bitwarden".to_string(),
             "Keychain Access".to_string(),
@@ -1032,6 +1051,9 @@ pub fn run() {
           // Token sets of the most recent stored captures, for near-duplicate skipping
           let mut recent_capture_texts: std::collections::VecDeque<std::collections::HashSet<String>> =
               std::collections::VecDeque::new();
+          // Last logged pre-spawn skip ("reason:app"), so a steady state (e.g.
+          // an excluded app staying frontmost) is logged once, not every tick
+          let mut last_skip_key: Option<String> = None;
 
           loop {
               std::thread::sleep(Duration::from_secs(3));
@@ -1081,6 +1103,7 @@ pub fn run() {
 
               let idle_seconds = unsafe { CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF) };
               if idle_seconds >= 60.0 {
+                  log_capture_skip(&mut last_skip_key, "idle", &app_name);
                   continue;
               }
 
@@ -1095,6 +1118,7 @@ pub fn run() {
 
               // Exclude sensitive apps (from user exclusions)
               if is_sensitive_app_in_list(&app_name, &bundle_id, &excluded_apps) {
+                  log_capture_skip(&mut last_skip_key, "excluded-app", &app_name);
                   continue;
               }
 
@@ -1102,14 +1126,18 @@ pub fn run() {
               if !excluded_domains.is_empty() && is_browser(&app_name, &bundle_id) {
                   if let Some(url) = get_active_browser_url(&app_name, &bundle_id) {
                       if is_domain_excluded(&url, &excluded_domains) {
+                          log_capture_skip(&mut last_skip_key, "excluded-domain", &app_name);
                           continue;
                       }
                   } else {
                       // Safety rule: skip if URL couldn't be read and domain exclusions exist
-                      println!("[Vera Privacy] Skipping capture because browser URL could not be read and domain exclusions exist.");
+                      log_capture_skip(&mut last_skip_key, "browser-url-unreadable", &app_name);
                       continue;
                   }
               }
+
+              // A real capture attempt is about to happen — reset the skip de-dup
+              last_skip_key = None;
 
               let app_changed = match &last_app {
                   Some(last) => last != &app_name,
@@ -1150,28 +1178,35 @@ pub fn run() {
                                           // Quality gate: no substantive content left after filtering
                                           if char_count < MIN_CAPTURE_CHARS {
                                               println!(
-                                                  "[Vera Capture] Skipped low-content capture ({} chars) from {}",
+                                                  "[Vera Capture] SKIP (low-content, {} chars) — {}",
                                                   char_count, app_name
                                               );
                                               continue;
                                           }
 
-                                          // Dedup: near-identical to a recent capture (static UI)
+                                          // Dedup: near-identical to one of the recent captures (static UI / recurring banner)
                                           let tokens = text_token_set(&text);
                                           let is_near_duplicate = recent_capture_texts
                                               .iter()
                                               .any(|prev| jaccard_similarity(prev, &tokens) > CAPTURE_SIMILARITY_SKIP);
                                           if is_near_duplicate {
                                               println!(
-                                                  "[Vera Capture] Skipped near-duplicate capture from {}",
+                                                  "[Vera Capture] SKIP (near-duplicate of recent) — {}",
                                                   app_name
                                               );
                                               continue;
                                           }
-                                          if recent_capture_texts.len() >= 3 {
+                                          if recent_capture_texts.len() >= RECENT_CAPTURE_WINDOW {
                                               recent_capture_texts.pop_front();
                                           }
                                           recent_capture_texts.push_back(tokens);
+
+                                          println!(
+                                              "[Vera Capture] STORE ({} chars) — {}{}",
+                                              char_count,
+                                              app_name,
+                                              window_title.as_deref().map(|w| format!(" — {}", w)).unwrap_or_default()
+                                          );
 
                                           let payload = CapturePayload {
                                               app_name: app_name.clone(),
@@ -1182,6 +1217,14 @@ pub fn run() {
                                               error: None,
                                           };
                                           let _ = app_handle_capture.emit("screen-capture", &payload);
+                                      } else if status == "Skipped" {
+                                          // Sidecar declined to capture (e.g. Vera was frontmost).
+                                          // Advance the markers so we don't re-spawn every tick.
+                                          last_app = Some(app_name.clone());
+                                          last_window = window_title.clone();
+                                          last_capture_time = Instant::now();
+                                          let reason = parsed.get("reason").and_then(|v| v.as_str()).unwrap_or("unspecified");
+                                          println!("[Vera Capture] SKIP (sidecar: {}) — {}", reason, app_name);
                                       } else if status == "PermissionRequired" {
                                           // Stop spamming — back off for 60 seconds
                                           permission_denied = true;

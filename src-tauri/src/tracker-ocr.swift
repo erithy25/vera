@@ -46,10 +46,27 @@ Task {
         var captureWidth: Int
         var captureHeight: Int
 
-        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let veraBundleId = "com.vera.app"
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let frontmostPid = frontmostApp?.processIdentifier
+
+        // Never OCR Vera's own window, even if it is frontmost (defense in depth;
+        // the Rust loop also skips this case before spawning the sidecar).
+        if frontmostApp?.bundleIdentifier == veraBundleId {
+            print("{\"status\": \"Skipped\", \"reason\": \"vera_frontmost\"}")
+            semaphore.signal()
+            return
+        }
+
+        // Vera's own SCRunningApplications, excluded from any full-display capture
+        let veraApplications = shareableContent.applications.filter {
+            $0.bundleIdentifier == veraBundleId
+        }
+
         let candidateWindows = shareableContent.windows.filter { win in
             guard let pid = frontmostPid, let owner = win.owningApplication else { return false }
             return owner.processID == pid
+                && owner.bundleIdentifier != veraBundleId
                 && win.windowLayer == 0
                 && win.isOnScreen
                 && win.frame.width >= 300
@@ -64,7 +81,8 @@ Task {
             captureWidth = Int(window.frame.width)
             captureHeight = Int(window.frame.height)
         } else {
-            filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            // Full-display fallback: exclude Vera so its window is never OCR'd
+            filter = SCContentFilter(display: display, excludingApplications: veraApplications, exceptingWindows: [])
             captureWidth = display.width
             captureHeight = display.height
             isFullDisplay = true
