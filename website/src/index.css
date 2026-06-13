@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* Vera's design tokens — kept identical to the desktop app */
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Newsreader", Georgia, serif;
+
+  --color-bg-warm: #f7f6f3;
+  --color-card-surface: #ffffff;
+  --color-border-hairline: #e6e4dd;
+  --color-text-primary: #1c1c1a;
+  --color-text-muted: #8a8a82;
+  --color-text-faint: #a8a8a0;
+  --color-active-hover: #efede8;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-warm);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hairline card, matching the app */
+.card-style {
+  background-color: var(--color-card-surface);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card-style:hover {
+    border-color: #d2cfc6;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.05);
+    transform: translateY(-2px);
+  }
+}
