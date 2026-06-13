@@ -57,6 +57,9 @@ const CpuIcon = ({ size = 20 }: IconProps) => (
 const LockIcon = ({ size = 20 }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5" /><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" /></svg>
 );
+const MenuBarIcon = ({ size = 20 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M3 8h18" /><circle cx="17.4" cy="6" r="0.9" fill="currentColor" stroke="none" /></svg>
+);
 
 function DownloadButton({ variant = "solid", light = false }: { variant?: "solid" | "ghost"; light?: boolean }) {
   const base = "inline-flex items-center justify-center gap-2 rounded-xl font-sans font-medium transition-all duration-200 cursor-pointer no-underline";
@@ -138,6 +141,7 @@ const features = [
   { icon: <TargetIcon />, title: "Goals & notes", body: "Capture quick notes and track goals; your agents can even propose them for approval." },
   { icon: <CpuIcon />, title: "Local or cloud", body: "Runs on a local model by default. Prefer a stronger model? Bring your own API key." },
   { icon: <LockIcon />, title: "Private by design", body: "Exclude apps and domains, redact sensitive data, or pause capture — all in your hands." },
+  { icon: <MenuBarIcon />, title: "Always on", body: "Lives in your menu bar and keeps remembering when the window is closed. Pause or quit anytime." },
 ];
 
 const faqs = [
