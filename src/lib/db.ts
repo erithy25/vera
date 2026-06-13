@@ -393,6 +393,38 @@ export const activityRepo = {
     }
     return result;
   },
+
+  // All activity events that started within [startMs, endMs), chronological
+  async eventsForDay(startMs: number, endMs: number): Promise<DbActivityEvent[]> {
+    const db = await getDb();
+    return db.select<DbActivityEvent[]>(
+      "SELECT * FROM activity_events WHERE started_at >= $1 AND started_at < $2 ORDER BY started_at ASC",
+      [startMs, endMs]
+    );
+  },
+
+  // Local-midnight timestamps (ms) of every day that has activity or captures,
+  // most recent first — drives the Timeline day selector.
+  async activeDays(): Promise<number[]> {
+    const db = await getDb();
+    const [actDays, capDays] = await Promise.all([
+      db.select<{ day: string }[]>(
+        "SELECT DISTINCT date(started_at/1000, 'unixepoch', 'localtime') as day FROM activity_events"
+      ),
+      db.select<{ day: string }[]>(
+        "SELECT DISTINCT date(captured_at/1000, 'unixepoch', 'localtime') as day FROM captures"
+      ),
+    ]);
+    const set = new Set<string>();
+    for (const row of [...actDays, ...capDays]) {
+      if (row.day) set.add(row.day);
+    }
+    const days = Array.from(set).map((d) => {
+      const [y, m, dd] = d.split("-").map(Number);
+      return new Date(y, m - 1, dd).getTime();
+    });
+    return days.sort((a, b) => b - a);
+  },
 };
 
 export const capturesRepo = {
@@ -413,6 +445,15 @@ export const capturesRepo = {
     return db.select<DbCapture[]>(
       "SELECT * FROM captures ORDER BY captured_at DESC LIMIT $1",
       [limit]
+    );
+  },
+
+  // All captures within [startMs, endMs), chronological — for the Timeline
+  async forDay(startMs: number, endMs: number): Promise<DbCapture[]> {
+    const db = await getDb();
+    return db.select<DbCapture[]>(
+      "SELECT * FROM captures WHERE captured_at >= $1 AND captured_at < $2 ORDER BY captured_at ASC",
+      [startMs, endMs]
     );
   },
 

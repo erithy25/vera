@@ -6,6 +6,7 @@ import { Knowledge } from "./components/Knowledge";
 import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
 import { Goals } from "./components/Goals";
+import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
 import { LockScreen } from "./components/LockScreen";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
@@ -281,6 +282,8 @@ function App() {
           {dbReady ? (
             currentView === "Dashboard" ? (
               <Dashboard />
+            ) : currentView === "Timeline" ? (
+              <Timeline />
             ) : currentView === "Agents" ? (
               <Agents />
             ) : currentView === "Knowledge" ? (
