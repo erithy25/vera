@@ -5,7 +5,6 @@ import {
   Pencil,
   Cpu,
   Shield,
-  Lock,
   RotateCcw,
   Download,
   Trash2,
@@ -168,7 +167,6 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ onClose, onNavigateSet
         <div className="flex flex-col">
           <LinkRow icon={<Cpu size={15} strokeWidth={1.5} />} label="AI Engine" onClick={() => onNavigateSettings("ai-engine")} />
           <LinkRow icon={<Shield size={15} strokeWidth={1.5} />} label="Privacy & Data" onClick={() => onNavigateSettings("privacy")} />
-          <LinkRow icon={<Lock size={15} strokeWidth={1.5} />} label="App Lock" onClick={() => onNavigateSettings("app-lock")} />
           <LinkRow icon={<RotateCcw size={15} strokeWidth={1.5} />} label="Re-run setup" onClick={handleRerunSetup} />
         </div>
 

@@ -767,24 +767,6 @@ export const settingsRepo = {
     );
   },
 
-  // App lock: only the on/off preference lives here — authentication itself
-  // is fully delegated to macOS LocalAuthentication (no app-managed secret).
-  async getAppLockEnabled(): Promise<boolean> {
-    const db = await getDb();
-    const rows = await db.select<any[]>(
-      "SELECT value FROM settings WHERE key = 'app_lock_enabled'"
-    );
-    return rows.length > 0 && rows[0].value === "true";
-  },
-
-  async setAppLockEnabled(enabled: boolean): Promise<void> {
-    const db = await getDb();
-    await db.execute(
-      "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_lock_enabled', $1)",
-      [enabled ? "true" : "false"]
-    );
-  },
-
   async getOnboardingComplete(): Promise<boolean> {
     const db = await getDb();
     const rows = await db.select<any[]>(
@@ -896,7 +878,6 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("cloud_last_status", "");
   await checkAndSeed("user_name", "");
   await checkAndSeed("onboarding_complete", "false");
-  await checkAndSeed("app_lock_enabled", "false");
 
   // One-time removal of the old seeded placeholder notes (empty-body samples).
   // Title + empty-body match, so a note the user actually edited is preserved.

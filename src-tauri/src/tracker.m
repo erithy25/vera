@@ -1,7 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
 #import <ApplicationServices/ApplicationServices.h>
-#import <LocalAuthentication/LocalAuthentication.h>
 
 typedef struct {
     char* app_name;
@@ -100,47 +99,6 @@ bool is_screen_locked(void) {
     }
     CFRelease(sessionInfo);
     return locked;
-}
-
-// App lock: authentication is fully delegated to macOS LocalAuthentication.
-// LAPolicyDeviceOwnerAuthentication = Touch ID with automatic fallback to the
-// Mac login password. Vera never stores or checks any secret of its own.
-
-bool can_authenticate_app_lock(void) {
-    LAContext *context = [[LAContext alloc] init];
-    NSError *error = nil;
-    BOOL can = [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication error:&error];
-    return can;
-}
-
-// Returns 1 = success, 0 = failed/cancelled, -1 = LocalAuthentication unavailable.
-// Blocks the calling thread until the system dialog completes — call it from a
-// background thread, never from the main thread.
-int authenticate_app_lock(const char* reason_utf8) {
-    LAContext *context = [[LAContext alloc] init];
-    NSError *error = nil;
-    if (![context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication error:&error]) {
-        return -1;
-    }
-
-    NSString *reason = nil;
-    if (reason_utf8 && reason_utf8[0] != '\0') {
-        reason = [NSString stringWithUTF8String:reason_utf8];
-    }
-    if (!reason || [reason length] == 0) {
-        reason = @"Unlock Vera";
-    }
-
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    __block BOOL ok = NO;
-    [context evaluatePolicy:LAPolicyDeviceOwnerAuthentication
-            localizedReason:reason
-                      reply:^(BOOL success, NSError * _Nullable err) {
-        ok = success;
-        dispatch_semaphore_signal(sema);
-    }];
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-    return ok ? 1 : 0;
 }
 
 bool check_screen_recording_permission(void) {

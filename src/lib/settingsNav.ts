@@ -3,7 +3,7 @@
 // records the target anchor id; the Settings page scrolls to it on mount and
 // whenever the event fires.
 
-export type SettingsSection = "ai-engine" | "privacy" | "app-lock" | "clear-data";
+export type SettingsSection = "ai-engine" | "privacy" | "clear-data";
 
 let pendingSection: SettingsSection | null = null;
 

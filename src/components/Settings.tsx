@@ -23,11 +23,6 @@ export const Settings: React.FC = () => {
   const [permAccessibility, setPermAccessibility] = useState<boolean>(false);
   const [permScreenRecording, setPermScreenRecording] = useState<boolean>(false);
 
-  // App lock (auth fully delegated to macOS LocalAuthentication)
-  const [appLockEnabled, setAppLockEnabledState] = useState<boolean>(false);
-  const [appLockBusy, setAppLockBusy] = useState<boolean>(false);
-  const [appLockError, setAppLockError] = useState<string | null>(null);
-
   // AI Engine state (local by default; cloud is bring-your-own-key)
   const [aiEngine, setAiEngine] = useState<AiEngine>("local");
   const [cloudProvider, setCloudProviderState] = useState<CloudProvider>("anthropic");
@@ -83,8 +78,6 @@ export const Settings: React.FC = () => {
         settingsRepo.getCloudProvider(),
         settingsRepo.getUserName(),
       ]);
-      const lockEnabled = await settingsRepo.getAppLockEnabled();
-      setAppLockEnabledState(lockEnabled);
 
       setIsPaused(paused);
       setExcludedApps(apps);
@@ -165,47 +158,6 @@ export const Settings: React.FC = () => {
       window.dispatchEvent(new CustomEvent("onboarding-reset"));
     } catch (err) {
       console.error("Failed to reset onboarding:", err);
-    }
-  };
-
-  const handleToggleAppLock = async () => {
-    if (appLockBusy) return;
-    setAppLockError(null);
-
-    if (appLockEnabled) {
-      // Turning OFF restores today's behavior
-      setAppLockEnabledState(false);
-      try {
-        await settingsRepo.setAppLockEnabled(false);
-        window.dispatchEvent(new CustomEvent("app-lock-updated"));
-      } catch (err) {
-        console.error("Failed to disable app lock:", err);
-      }
-      return;
-    }
-
-    // Turning ON: require one successful authentication first
-    setAppLockBusy(true);
-    try {
-      const result = await invoke<{ success: boolean; available: boolean }>(
-        "authenticate_app_lock",
-        { reason: "Confirm Touch ID to enable App Lock" }
-      );
-      if (result.success) {
-        setAppLockEnabledState(true);
-        await settingsRepo.setAppLockEnabled(true);
-        window.dispatchEvent(new CustomEvent("app-lock-updated"));
-      } else if (!result.available) {
-        setAppLockError(
-          "Touch ID / password authentication is not available on this Mac, so App Lock cannot be enabled."
-        );
-      } else {
-        setAppLockError("Authentication was cancelled — App Lock stays off.");
-      }
-    } catch (err) {
-      setAppLockError(errorToMessage(err));
-    } finally {
-      setAppLockBusy(false);
     }
   };
 
@@ -901,37 +853,6 @@ export const Settings: React.FC = () => {
               <RotateCcw size={13} strokeWidth={1.5} />
               Re-run onboarding
             </button>
-          </div>
-
-          {/* App Lock / Security Card */}
-          <div id="settings-app-lock" className="card-style p-5 flex flex-col gap-3 scroll-mt-6">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex flex-col gap-1">
-                <span className="font-serif text-[17px] font-normal text-text-primary">
-                  App Lock
-                </span>
-                <span className="font-sans text-[12px] text-text-muted leading-normal">
-                  Require Touch ID (or your Mac password) to unlock Vera — on launch, after your Mac was locked, and when the window was hidden. Authentication is handled entirely by macOS; Vera never stores a password. This gates the app window — it does not additionally encrypt the data on disk.
-                </span>
-              </div>
-              <input
-                type="checkbox"
-                checked={appLockEnabled}
-                onChange={handleToggleAppLock}
-                disabled={appLockBusy}
-                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
-              />
-            </div>
-            {appLockBusy && (
-              <span className="font-sans text-[12px] text-text-faint animate-pulse">
-                Waiting for Touch ID…
-              </span>
-            )}
-            {appLockError && (
-              <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl font-sans text-[12px] text-amber-700 leading-normal">
-                {appLockError}
-              </div>
-            )}
           </div>
         </div>
 
