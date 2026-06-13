@@ -291,6 +291,13 @@ async fn authenticate_app_lock(reason: Option<String>) -> Result<AppLockAuthResu
     })
 }
 
+/// Write a UTF-8 text file to an explicit, user-chosen path (from the export
+/// save dialog). Kept minimal on purpose — no fs plugin / path scope needed.
+#[tauri::command]
+fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
+}
+
 /// Open the matching macOS System Settings privacy pane.
 #[tauri::command]
 fn open_privacy_settings(pane: String) -> Result<(), String> {
@@ -918,6 +925,7 @@ pub fn run() {
         .add_migrations("sqlite:vera.db", migrations)
         .build()
     )
+    .plugin(tauri_plugin_dialog::init())
     .manage(PrivacyState {
       settings: Mutex::new(PrivacySettings {
         paused: true, // Secure default on startup
@@ -943,6 +951,7 @@ pub fn run() {
       has_screen_recording_permission,
       request_screen_recording_permission,
       open_privacy_settings,
+      write_text_file_at,
       can_use_app_lock,
       authenticate_app_lock,
       set_capture_paused,

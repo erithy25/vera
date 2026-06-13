@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, Shield, ShieldAlert, Trash2, EyeOff, RotateCcw } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
+import { consumeSettingsSection } from "../lib/settingsNav";
 
 type AiEngine = "local" | "cloud";
 type CloudProvider = "anthropic" | "openai";
@@ -131,6 +132,22 @@ export const Settings: React.FC = () => {
     const onFocus = () => refreshPermissions();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  // Scroll to a section requested from the profile menu (on mount and on event)
+  useEffect(() => {
+    const scrollToPending = () => {
+      const section = consumeSettingsSection();
+      if (!section) return;
+      setTimeout(() => {
+        document
+          .getElementById(`settings-${section}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 60);
+    };
+    scrollToPending();
+    window.addEventListener("vera-settings-section", scrollToPending);
+    return () => window.removeEventListener("vera-settings-section", scrollToPending);
   }, []);
 
   const handleSaveUserName = async (val: string) => {
@@ -475,7 +492,7 @@ export const Settings: React.FC = () => {
       </div>
 
       {/* AI Engine Selection Card */}
-      <div className="card-style p-6 flex flex-col gap-5">
+      <div id="settings-ai-engine" className="card-style p-6 flex flex-col gap-5 scroll-mt-6">
         <div className="flex flex-col gap-0.5 border-b border-border-hairline pb-4">
           <h2 className="font-serif text-[20px] font-normal text-text-primary">AI Engine</h2>
           <p className="font-sans text-[13px] text-text-faint">
@@ -744,7 +761,7 @@ export const Settings: React.FC = () => {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-2">
+      <div id="settings-privacy" className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-2 scroll-mt-6">
         {/* Left Column Controls */}
         <div className="flex flex-col gap-6">
           {/* Master Capture Status Card */}
@@ -829,7 +846,7 @@ export const Settings: React.FC = () => {
           </div>
 
           {/* Destructive Actions Card */}
-          <div className="card-style p-5 flex flex-col gap-4">
+          <div id="settings-clear-data" className="card-style p-5 flex flex-col gap-4 scroll-mt-6">
             <div className="flex flex-col gap-0.5">
               <span className="font-serif text-[17px] font-normal text-text-primary">
                 Clear Memory
@@ -887,7 +904,7 @@ export const Settings: React.FC = () => {
           </div>
 
           {/* App Lock / Security Card */}
-          <div className="card-style p-5 flex flex-col gap-3">
+          <div id="settings-app-lock" className="card-style p-5 flex flex-col gap-3 scroll-mt-6">
             <div className="flex items-start justify-between gap-4">
               <div className="flex flex-col gap-1">
                 <span className="font-serif text-[17px] font-normal text-text-primary">

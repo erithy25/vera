@@ -18,6 +18,8 @@ import { navItems } from "../lib/config";
 import { notesRepo, DbNote } from "../lib/db";
 import { useUserProfile } from "../lib/useUserProfile";
 import { NotesComposer } from "./NotesComposer";
+import { ProfileMenu } from "./ProfileMenu";
+import { requestSettingsSection, SettingsSection } from "../lib/settingsNav";
 
 interface SidebarProps {
   currentView: string;
@@ -85,6 +87,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, d
   const [composerNote, setComposerNote] = useState<DbNote | "new" | null>(null);
   // Bumped on a timer so relative timestamps stay live without refetching
   const [, setClockTick] = useState(0);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+
+  const handleNavigateSettings = (section: SettingsSection) => {
+    setProfileMenuOpen(false);
+    setCurrentView("Settings");
+    requestSettingsSection(section);
+  };
 
   const fetchNotes = async () => {
     try {
@@ -282,24 +291,37 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView, d
         </div>
       </div>
 
-      {/* Profile Section Pinned at Bottom */}
-      <div className="border-t border-border-hairline pt-4 mt-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-active-hover flex items-center justify-center border border-border-hairline">
-            <span className="font-sans text-[13px] font-semibold text-text-primary">
-              {userInitials}
-            </span>
+      {/* Profile Section Pinned at Bottom — opens the local profile hub */}
+      <div className="relative mt-4">
+        {profileMenuOpen && (
+          <ProfileMenu
+            onClose={() => setProfileMenuOpen(false)}
+            onNavigateSettings={handleNavigateSettings}
+          />
+        )}
+        <button
+          onClick={() => setProfileMenuOpen((open) => !open)}
+          className={`w-full border-t border-border-hairline pt-4 flex items-center justify-between rounded-b-lg transition-colors cursor-pointer ${
+            profileMenuOpen ? "" : "hover:opacity-80"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-active-hover flex items-center justify-center border border-border-hairline">
+              <span className="font-sans text-[13px] font-semibold text-text-primary">
+                {userInitials}
+              </span>
+            </div>
+            <div className="flex flex-col items-start">
+              <span className="font-sans text-[13px] font-medium text-text-primary leading-tight">
+                {userName.trim() || "You"}
+              </span>
+              <span className="font-sans text-[11px] text-text-faint">
+                Local
+              </span>
+            </div>
           </div>
-          <div className="flex flex-col">
-            <span className="font-sans text-[13px] font-medium text-text-primary leading-tight">
-              {userName.trim() || "You"}
-            </span>
-            <span className="font-sans text-[11px] text-text-faint">
-              Local
-            </span>
-          </div>
-        </div>
-        <ChevronsUpDown size={16} strokeWidth={1.5} className="text-text-muted cursor-pointer" />
+          <ChevronsUpDown size={16} strokeWidth={1.5} className="text-text-muted" />
+        </button>
       </div>
     </aside>
 
