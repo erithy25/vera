@@ -36,3 +36,6 @@ dist
 src-tauri/target
 *.nosync
 .env
+
+# macOS signing credentials — never commit these
+.env.signing
