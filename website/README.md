@@ -30,12 +30,20 @@ The site is a standard Vite app, so Vercel detects it automatically.
 
 ## The "Download for Mac" button
 
-The button always resolves the **newest** release: on click it queries
-`https://api.github.com/repos/erithy25/vera/releases/latest`, picks the
-`.dmg` asset (preferring Apple Silicon / universal), and downloads it. If no
-release exists yet, it falls back to the repo's releases page.
+The button downloads Vera **directly** from this site — no redirect to GitHub.
+It points at `/downloads/Vera.dmg`, which is served from `public/downloads/`.
 
-For the button to serve a file, publish a GitHub Release with the built
-`Vera_*.dmg` attached (ideally automated with a release workflow on macOS).
-A browser cannot silently install an app — clicking downloads the DMG, which
-the user opens and drags into Applications (the standard macOS flow).
+You provide that file from your local build:
+
+```bash
+# from the repo root, after `npm run tauri build`
+cp src-tauri/target/release/bundle/dmg/Vera_*.dmg website/public/downloads/Vera.dmg
+git add website/public/downloads/Vera.dmg && git commit -m "Publish latest Vera DMG"
+```
+
+The DMG must be **committed** so Vercel serves it with the deployed site. To
+ship a new version, replace that file and commit again — the button always
+serves whatever is at `/downloads/Vera.dmg`.
+
+Note: a browser cannot silently install an app. Clicking downloads the DMG,
+which the user opens and drags into Applications (the standard macOS flow).
