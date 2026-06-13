@@ -41,5 +41,40 @@ fn main() {
       }
   }
 
+  // Sign the bundled OCR sidecar so the app passes notarization. Tauri signs
+  // the main binary and the .app, but not this extra resource binary — without
+  // a Developer ID signature that has a secure timestamp and the hardened
+  // runtime enabled, Apple rejects notarization. Only runs when a signing
+  // identity is provided (release builds); plain dev builds skip it.
+  println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+  if let Ok(identity) = std::env::var("APPLE_SIGNING_IDENTITY") {
+      let identity = identity.trim().to_string();
+      if !identity.is_empty() {
+          println!("Signing OCR helper sidecar with Developer ID + hardened runtime...");
+          let sign = std::process::Command::new("codesign")
+              .args([
+                  "--force",
+                  "--timestamp",
+                  "--options",
+                  "runtime",
+                  "--sign",
+                  &identity,
+                  ocr_binary,
+              ])
+              .status();
+          match sign {
+              Ok(s) if s.success() => {
+                  println!("OCR helper sidecar signed for notarization.");
+              }
+              Ok(s) => {
+                  panic!("codesign of ocr-helper failed with status: {:?}", s);
+              }
+              Err(e) => {
+                  panic!("Failed to run codesign for ocr-helper: {:?}", e);
+              }
+          }
+      }
+  }
+
   tauri_build::build()
 }
