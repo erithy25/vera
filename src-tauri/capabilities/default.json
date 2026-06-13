@@ -11,6 +11,8 @@
     "sql:allow-execute",
     "sql:allow-select",
     "sql:allow-load",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "updater:default",
+    "process:default"
   ]
 }

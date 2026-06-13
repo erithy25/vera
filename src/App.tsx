@@ -8,6 +8,7 @@ import { Agents } from "./components/Agents";
 import { Goals } from "./components/Goals";
 import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
+import { UpdateChecker } from "./components/UpdateChecker";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { ollamaClient } from "./lib/ollama";
@@ -237,6 +238,9 @@ function App() {
           )}
         </main>
       </div>
+
+      {/* Auto-update prompt (shows only when a newer version is published) */}
+      <UpdateChecker />
     </div>
   );
 }
