@@ -7,21 +7,40 @@ it, anyone can download Vera from the site and open it normally.
 You only do the setup (steps 1–4) **once**. After that, building a release is a
 single command.
 
+### Do I need the full Xcode app?
+
+**No.** Certificate creation is done entirely with **Keychain Access** (built into
+macOS) plus the Apple Developer website. You only need the **Xcode Command Line
+Tools** for `codesign` and `notarytool` — and you already have them, because
+building Vera requires them. Confirm with:
+
+```bash
+xcrun notarytool --version
+```
+
+If that prints a version, you're set. If it says the tool can't be found, install
+the Command Line Tools (small download, not the full Xcode app):
+
+```bash
+xcode-select --install
+```
+
 ---
 
-## 1. Create a "Developer ID Application" certificate
+## 1. Create a "Developer ID Application" certificate (no Xcode needed)
 
-**Easiest (with Xcode installed):**
-Xcode → Settings → Accounts → add your Apple ID → **Manage Certificates…** →
-click **+** → **Developer ID Application**. It installs into your Keychain.
+1. Open **Keychain Access** → menu **Certificate Assistant → Request a Certificate
+   From a Certificate Authority…** → enter your email, leave "CA Email" blank,
+   choose **Saved to disk** → save the `.certSigningRequest` file (e.g. to the Desktop).
+2. Go to https://developer.apple.com/account/resources/certificates → click **+** →
+   choose **Developer ID Application** → upload the request file → **Download** the
+   resulting `.cer` → **double-click it** to install into your login Keychain.
 
-**Without Xcode:**
-1. Keychain Access → menu **Certificate Assistant → Request a Certificate From a
-   Certificate Authority…** → enter your email, choose **Saved to disk** → save the
-   `.certSigningRequest` file.
-2. https://developer.apple.com/account/resources/certificates → **+** →
-   **Developer ID Application** → upload the request → download the `.cer` →
-   double-click it to install into Keychain.
+(Developer ID certificates can only be created by the **Account Holder** of the
+Developer Program — that's you, on your own account.)
+
+*If you do have Xcode, the shortcut is: Xcode → Settings → Accounts → Manage
+Certificates → + → Developer ID Application.*
 
 ## 2. Find your signing identity
 
