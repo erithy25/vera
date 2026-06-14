@@ -1,5 +1,6 @@
 use tauri_plugin_sql::{Migration, MigrationKind};
 use std::os::raw::c_char;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -34,16 +35,6 @@ extern "C" {
     fn ffi_request_screen_recording_permission() -> bool;
 }
 
-#[derive(Clone, Serialize)]
-struct CapturePayload {
-    app_name: String,
-    window_title: Option<String>,
-    ocr_text: String,
-    char_count: usize,
-    status: String,
-    error: Option<String>,
-}
-
 struct PrivacySettings {
     paused: bool,
     excluded_apps: Vec<String>,
@@ -60,28 +51,20 @@ struct TrayHandles {
     pause_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
 }
 
-// Capture quality gates: skip captures without substantive content and
-// near-identical re-captures of static UI (sidebars, menus, tab strips).
-const MIN_CAPTURE_CHARS: usize = 64;
-const CAPTURE_SIMILARITY_SKIP: f64 = 0.85;
-// How many recent stored captures the dedup compares against. A wide window
-// means recurring notifications/banners (e.g. an iCloud banner that pops over
-// several apps) are stored once, not every time they reappear.
-const RECENT_CAPTURE_WINDOW: usize = 15;
-
-// Log a pre-spawn capture skip at most once per (reason, app) steady state, so
-// an excluded app staying frontmost is logged once instead of every 3s tick.
-fn log_capture_skip(last_skip_key: &mut Option<String>, reason: &str, app: &str) {
-    let key = format!("{}:{}", reason, app);
-    if last_skip_key.as_deref() != Some(key.as_str()) {
-        println!(
-            "[Vera Capture] SKIP ({}) — {}",
-            reason,
-            if app.is_empty() { "<unknown>" } else { app }
-        );
-        *last_skip_key = Some(key);
-    }
+// Frame-based screen recording (SCStream sidecar). `enabled` mirrors the
+// `frames_capture_enabled` setting (default OFF); `child` is the live sidecar
+// process so the supervisor can start/stop it. Both window-independent so
+// capture keeps running when the window is hidden/closed.
+struct FrameCaptureState {
+    enabled: Mutex<bool>,
+    child: Mutex<Option<std::process::Child>>,
 }
+
+// Near-identical re-capture dedup window for the startup cleanup of the legacy
+// `captures` table. A wide window means recurring notifications/banners are
+// counted once, not every time they reappear.
+const CAPTURE_SIMILARITY_SKIP: f64 = 0.85;
+const RECENT_CAPTURE_WINDOW: usize = 15;
 
 fn text_token_set(text: &str) -> std::collections::HashSet<String> {
     text.to_lowercase()
@@ -188,6 +171,7 @@ fn get_active_browser_url(app_name: &str, bundle_id: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)] // domain filtering returns with a later capture prompt
 fn is_domain_excluded(url: &str, excluded_domains: &[String]) -> bool {
     let mut host = url;
     if let Some(idx) = url.find("://") {
@@ -271,6 +255,7 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// Port of isLuhnValid (src/lib/db.ts).
+#[allow(dead_code)] // reused by on-frame redaction in a later prompt
 fn is_luhn_valid(s: &str) -> bool {
     let mut sum = 0u32;
     let mut double = false;
@@ -294,6 +279,7 @@ fn is_luhn_valid(s: &str) -> bool {
 
 /// Port of redactSensitiveData (src/lib/db.ts). Regex literals are compiled
 /// with `.ok()` so a (theoretically impossible) bad pattern can never panic.
+#[allow(dead_code)] // reused by on-frame redaction in a later prompt
 fn redact_sensitive_data(text: &str) -> String {
     let mut out = text.to_string();
 
@@ -368,33 +354,6 @@ fn open_vera_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> 
     let conn = rusqlite::Connection::open(&path).map_err(|e| format!("open db: {}", e))?;
     let _ = conn.busy_timeout(Duration::from_millis(5000));
     Ok(conn)
-}
-
-/// Insert one screen capture directly into SQLite, applying redaction when the
-/// setting is on. Returns an error string instead of panicking.
-fn persist_capture(
-    app: &tauri::AppHandle,
-    app_name: &str,
-    window_title: Option<&str>,
-    ocr_text: &str,
-) -> Result<(), String> {
-    let conn = open_vera_db(app)?;
-    let redaction_enabled = read_setting(&conn, "redaction_enabled")
-        .map(|v| v != "false")
-        .unwrap_or(true);
-    let stored = if redaction_enabled {
-        redact_sensitive_data(ocr_text)
-    } else {
-        ocr_text.to_string()
-    };
-    let char_count = stored.chars().count() as i64;
-    conn.execute(
-        "INSERT INTO captures (captured_at, app_name, window_title, ocr_text, char_count, embedding) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-        rusqlite::params![now_epoch_ms() as i64, app_name, window_title, stored, char_count],
-    )
-    .map_err(|e| format!("insert capture: {}", e))?;
-    Ok(())
 }
 
 /// Upsert one activity segment directly into SQLite (mirrors insertEvent).
@@ -542,6 +501,287 @@ fn apply_pause(app: &tauri::AppHandle, paused: bool) {
     }
 }
 
+// ---------- Frame-based screen recording (SCStream sidecar) ----------
+// A long-lived Swift sidecar (frame-capture) streams the display at a low rate,
+// keeps only visibly-changed frames, OCRs them, writes the image to Application
+// Support, and prints one JSON line per kept frame. The supervisor thread below
+// owns the sidecar's lifecycle (start when enabled + not paused + permitted,
+// stop otherwise) and persists each frame into the `frames` table. It is fully
+// backend-driven, so capture keeps running with the window hidden or closed.
+
+/// Directory for frame images: <app data>/frames (local, never iCloud).
+fn frames_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .or_else(|_| app.path().app_config_dir())
+        .map_err(|e| format!("Cannot resolve app data dir: {}", e))?;
+    let dir = base.join("frames");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create frames dir: {}", e))?;
+    Ok(dir)
+}
+
+/// Open vera.db for frame writes, ensuring the table exists regardless of when
+/// the sql-plugin migration ran.
+fn open_frames_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
+    let conn = open_vera_db(app)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS frames (\
+           id INTEGER PRIMARY KEY AUTOINCREMENT, \
+           timestamp INTEGER NOT NULL, \
+           app TEXT, \
+           window_title TEXT, \
+           url TEXT, \
+           ocr_text TEXT, \
+           image_path TEXT NOT NULL, \
+           perceptual_hash TEXT)",
+        [],
+    )
+    .map_err(|e| format!("ensure frames table: {}", e))?;
+    Ok(conn)
+}
+
+/// Persist the frames-enabled flag so the supervisor resumes after a restart.
+fn persist_frames_enabled(app: &tauri::AppHandle, enabled: bool) {
+    if let Ok(conn) = open_vera_db(app) {
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_capture_enabled', ?1)",
+            rusqlite::params![if enabled { "true" } else { "false" }],
+        );
+    }
+}
+
+/// Insert one kept frame, enriching with the active browser URL (browsers only)
+/// via the existing Automation path. An excluded frontmost app is dropped here
+/// too (belt-and-suspenders with the sidecar's own gate).
+fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), String> {
+    let app_name = v.get("app").and_then(|x| x.as_str()).unwrap_or("");
+    let bundle_id = v.get("bundle_id").and_then(|x| x.as_str()).unwrap_or("");
+    let window_title = v.get("window_title").and_then(|x| x.as_str());
+    let ocr_text = v.get("ocr_text").and_then(|x| x.as_str()).unwrap_or("");
+    let image_path = v.get("image_path").and_then(|x| x.as_str()).unwrap_or("");
+    let phash = v.get("perceptual_hash").and_then(|x| x.as_str());
+    let timestamp = v
+        .get("timestamp")
+        .and_then(|x| x.as_i64())
+        .unwrap_or_else(|| now_epoch_ms() as i64);
+
+    if image_path.is_empty() {
+        return Err("frame missing image_path".to_string());
+    }
+
+    // Defensive exclude re-check against the current settings.
+    let excluded = app
+        .state::<PrivacyState>()
+        .settings
+        .lock()
+        .map(|s| s.excluded_apps.clone())
+        .unwrap_or_default();
+    if is_sensitive_app_in_list(app_name, bundle_id, &excluded) {
+        return Ok(());
+    }
+
+    let url: Option<String> = if is_browser(app_name, bundle_id) {
+        get_active_browser_url(app_name, bundle_id)
+    } else {
+        None
+    };
+
+    let conn = open_frames_db(app)?;
+    conn.execute(
+        "INSERT INTO frames (timestamp, app, window_title, url, ocr_text, image_path, perceptual_hash) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![timestamp, app_name, window_title, url, ocr_text, image_path, phash],
+    )
+    .map_err(|e| format!("insert frame: {}", e))?;
+    let _ = app.emit("frame-stored", ());
+    Ok(())
+}
+
+/// Parse and act on one stdout line from the frame-capture sidecar.
+fn handle_sidecar_line(app: &tauri::AppHandle, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let v: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("[frame-capture] {}", trimmed);
+            return;
+        }
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("frame") => {
+            if let Err(e) = persist_frame(app, &v) {
+                eprintln!("[Vera Frames] persist failed: {}", e);
+            }
+        }
+        Some("status") => {
+            let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            println!("[Vera Frames] sidecar status: {}", status);
+            if status == "PermissionRequired" {
+                let _ = app.emit(
+                    "screen-capture",
+                    &serde_json::json!({ "status": "PermissionRequired" }),
+                );
+            }
+        }
+        Some("log") => {
+            if let Some(m) = v.get("message").and_then(|m| m.as_str()) {
+                println!("[frame-capture] {}", m);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Spawn the frame-capture sidecar and a reader thread that persists its output.
+fn spawn_frame_sidecar(app: &tauri::AppHandle, helper: &Path) -> Result<std::process::Child, String> {
+    let out_dir = frames_dir(app)?;
+    let excluded = app
+        .state::<PrivacyState>()
+        .settings
+        .lock()
+        .map(|s| s.excluded_apps.clone())
+        .unwrap_or_default();
+    let exclude_arg = excluded.join(",");
+
+    let mut cmd = std::process::Command::new(helper);
+    cmd.arg("--out-dir").arg(&out_dir)
+        .arg("--fps").arg("1")
+        .arg("--max-width").arg("1280")
+        .arg("--hash-threshold").arg("5")
+        .arg("--vera-bundle-id").arg("app.vera.desktop");
+    if !exclude_arg.is_empty() {
+        cmd.arg("--exclude").arg(exclude_arg);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn frame-capture: {}", e))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => handle_sidecar_line(&app2, &l),
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    eprintln!("[frame-capture:err] {}", l);
+                }
+            }
+        });
+    }
+    println!("[Vera Frames] capture started (out={})", out_dir.display());
+    Ok(child)
+}
+
+/// Long-lived supervisor: reconciles the sidecar with the enabled/paused/
+/// permission state every couple of seconds. Never panics.
+fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
+    let helper = match helper {
+        Some(h) => h,
+        None => {
+            eprintln!("[Vera Frames] frame-capture sidecar not found; frame capture disabled");
+            return;
+        }
+    };
+    let mut warned_permission = false;
+
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+
+        let want = {
+            let enabled = app
+                .state::<FrameCaptureState>()
+                .enabled
+                .lock()
+                .map(|e| *e)
+                .unwrap_or(false);
+            let paused = app
+                .state::<PrivacyState>()
+                .settings
+                .lock()
+                .map(|s| s.paused)
+                .unwrap_or(true);
+            enabled && !paused
+        };
+
+        // Is the sidecar alive? Reap it if it exited on its own.
+        let running = {
+            let state = app.state::<FrameCaptureState>();
+            let mut guard = match state.child.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let alive = match guard.as_mut() {
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            };
+            if !alive {
+                *guard = None;
+            }
+            alive
+        };
+
+        if want && !running {
+            // Degrade gracefully if screen recording permission is missing.
+            if !unsafe { ffi_check_screen_recording_permission() } {
+                if !warned_permission {
+                    eprintln!("[Vera Frames] screen recording permission not granted; will retry");
+                    warned_permission = true;
+                }
+                continue;
+            }
+            warned_permission = false;
+            match spawn_frame_sidecar(&app, &helper) {
+                Ok(child) => {
+                    if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
+                        *g = Some(child);
+                    }
+                }
+                Err(e) => eprintln!("[Vera Frames] failed to start sidecar: {}", e),
+            }
+        } else if !want && running {
+            if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
+                if let Some(mut child) = g.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    println!("[Vera Frames] capture stopped");
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn set_frames_capture_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    persist_frames_enabled(&app, enabled);
+    if let Ok(mut e) = app.state::<FrameCaptureState>().enabled.lock() {
+        *e = enabled;
+    }
+    println!("[Vera Frames] frames_capture_enabled set to {}", enabled);
+    Ok(())
+}
+
+#[tauri::command]
+fn is_frames_capture_enabled(state: tauri::State<'_, FrameCaptureState>) -> bool {
+    state.enabled.lock().map(|e| *e).unwrap_or(false)
+}
+
 #[tauri::command]
 fn set_capture_paused(app: tauri::AppHandle, paused: bool) {
     apply_pause(&app, paused);
@@ -571,6 +811,15 @@ fn update_privacy_settings(
             settings.excluded_apps.len(),
             settings.excluded_domains.len()
         );
+    }
+    // Recycle the frame sidecar so a changed exclude list takes immediate effect
+    // (its capture-time SCContentFilter + frontmost gate are set at spawn). The
+    // supervisor respawns it within ~2s with the new exclusions.
+    if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
+        if let Some(mut child) = g.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
     apply_pause(&app, paused);
 }
@@ -1203,6 +1452,23 @@ pub fn run() {
         ALTER TABLE goals ADD COLUMN done INTEGER NOT NULL DEFAULT 0;
       ",
       kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 5,
+      description: "create_frames_table",
+      sql: "
+        CREATE TABLE IF NOT EXISTS frames (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          app TEXT,
+          window_title TEXT,
+          url TEXT,
+          ocr_text TEXT,
+          image_path TEXT NOT NULL,
+          perceptual_hash TEXT
+        );
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 
@@ -1261,6 +1527,10 @@ pub fn run() {
     .manage(TrayHandles {
       pause_item: Mutex::new(None),
     })
+    .manage(FrameCaptureState {
+      enabled: Mutex::new(false), // default OFF; resolved from settings in setup()
+      child: Mutex::new(None),
+    })
     .invoke_handler(tauri::generate_handler![
       has_accessibility_permission,
       request_accessibility_permission,
@@ -1274,7 +1544,9 @@ pub fn run() {
       save_cloud_api_key,
       has_cloud_api_key,
       test_cloud_connection,
-      generate_chat_completion
+      generate_chat_completion,
+      set_frames_capture_enabled,
+      is_frames_capture_enabled
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -1338,16 +1610,9 @@ pub fn run() {
           }
       }
 
-      // Resolve the bundled swift OCR helper resource path (compiled at build time)
-      let helper_path = app.path()
-          .resolve("binaries/ocr-helper", tauri::path::BaseDirectory::Resource)
-          .expect("failed to resolve ocr-helper resource path");
-
-      if !helper_path.exists() {
-          eprintln!("Warning: ocr-helper binary resource does not exist at {:?}", helper_path);
-      }
-
-      // Spawn native background tracking thread
+      // Spawn native background activity-tracking thread (app/window/duration).
+      // This is NOT the screen-capture loop; the old text-only capture loop was
+      // retired in favour of the frame-capture sidecar supervised below.
       let app_handle = app.handle().clone();
       std::thread::spawn(move || {
           let mut current_app: Option<String> = None;
@@ -1367,250 +1632,31 @@ pub fn run() {
           }
       });
 
-      // Spawn background screen capture thread
-      let app_handle_capture = app.handle().clone();
-      let helper_path_capture = helper_path.clone();
+      // Resolve the bundled frame-capture sidecar and start its supervisor.
+      // The supervisor owns the sidecar lifecycle and only runs it when the
+      // "Screen recording (frames)" setting is on, capture isn't paused, and
+      // screen-recording permission is granted. Backend-driven, so it keeps
+      // capturing when the window is hidden or closed.
+      let frame_helper = app
+          .path()
+          .resolve("binaries/frame-capture", tauri::path::BaseDirectory::Resource)
+          .ok()
+          .filter(|p| p.exists());
+      if frame_helper.is_none() {
+          eprintln!("Warning: frame-capture binary resource not found; frame capture disabled");
+      }
+
+      // Resume the persisted enabled state across restarts (default OFF).
+      let frames_enabled = read_setting_from_app(app.handle(), "frames_capture_enabled")
+          .map(|v| v == "true")
+          .unwrap_or(false);
+      if let Ok(mut e) = app.state::<FrameCaptureState>().enabled.lock() {
+          *e = frames_enabled;
+      }
+
+      let app_handle_frames = app.handle().clone();
       std::thread::spawn(move || {
-          let mut last_app: Option<String> = None;
-          let mut last_window: Option<String> = None;
-          let mut last_capture_time = Instant::now() - Duration::from_secs(60);
-          let mut permission_denied = false;
-          let mut last_permission_check = Instant::now() - Duration::from_secs(120);
-          // Token sets of the most recent stored captures, for near-duplicate skipping
-          let mut recent_capture_texts: std::collections::VecDeque<std::collections::HashSet<String>> =
-              std::collections::VecDeque::new();
-          // Last logged pre-spawn skip ("reason:app"), so a steady state (e.g.
-          // an excluded app staying frontmost) is logged once, not every tick
-          let mut last_skip_key: Option<String> = None;
-
-          loop {
-              std::thread::sleep(Duration::from_secs(3));
-
-              // If permission was denied, only retry every 60 seconds
-              if permission_denied {
-                  if last_permission_check.elapsed() < Duration::from_secs(60) {
-                      continue;
-                  }
-                  // Time to retry — fall through
-              }
-
-              let (paused, excluded_apps, excluded_domains) = {
-                  if let Ok(settings) = app_handle_capture.state::<PrivacyState>().settings.lock() {
-                      (settings.paused, settings.excluded_apps.clone(), settings.excluded_domains.clone())
-                  } else {
-                      (true, Vec::new(), Vec::new())
-                  }
-              };
-
-              if paused {
-                  continue;
-              }
-
-              // Never capture while the screen is locked
-              if unsafe { ffi_is_screen_locked() } {
-                  continue;
-              }
-
-              let activity = unsafe { get_active_app_activity() };
-              let app_name = if !activity.app_name.is_null() {
-                  unsafe { std::ffi::CStr::from_ptr(activity.app_name).to_string_lossy().into_owned() }
-              } else {
-                  String::new()
-              };
-              let bundle_id = if !activity.bundle_id.is_null() {
-                  unsafe { std::ffi::CStr::from_ptr(activity.bundle_id).to_string_lossy().into_owned() }
-              } else {
-                  String::new()
-              };
-              let window_title = if !activity.window_title.is_null() {
-                  Some(unsafe { std::ffi::CStr::from_ptr(activity.window_title).to_string_lossy().into_owned() })
-              } else {
-                  None
-              };
-              unsafe { free_app_activity(activity) };
-
-              let idle_seconds = unsafe { CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF) };
-              if idle_seconds >= 60.0 {
-                  log_capture_skip(&mut last_skip_key, "idle", &app_name);
-                  continue;
-              }
-
-              if app_name.is_empty() || is_system_process(&app_name, &bundle_id) {
-                  continue;
-              }
-
-              // Exclude Vera itself
-              if app_name == "Vera" || app_name == "vera" || bundle_id == "app.vera.desktop" {
-                  continue;
-              }
-
-              // Exclude sensitive apps (from user exclusions)
-              if is_sensitive_app_in_list(&app_name, &bundle_id, &excluded_apps) {
-                  log_capture_skip(&mut last_skip_key, "excluded-app", &app_name);
-                  continue;
-              }
-
-              // Exclude browser domains
-              if !excluded_domains.is_empty() && is_browser(&app_name, &bundle_id) {
-                  if let Some(url) = get_active_browser_url(&app_name, &bundle_id) {
-                      if is_domain_excluded(&url, &excluded_domains) {
-                          log_capture_skip(&mut last_skip_key, "excluded-domain", &app_name);
-                          continue;
-                      }
-                  } else {
-                      // Safety rule: skip if URL couldn't be read and domain exclusions exist
-                      log_capture_skip(&mut last_skip_key, "browser-url-unreadable", &app_name);
-                      continue;
-                  }
-              }
-
-              // A real capture attempt is about to happen — reset the skip de-dup
-              last_skip_key = None;
-
-              let app_changed = match &last_app {
-                  Some(last) => last != &app_name,
-                  None => true,
-              };
-              let window_changed = match (&last_window, &window_title) {
-                  (Some(last_w), Some(curr_w)) => last_w != curr_w,
-                  (None, None) => false,
-                  _ => true,
-              };
-
-              let elapsed = last_capture_time.elapsed();
-              let should_capture = app_changed || window_changed || elapsed >= Duration::from_secs(30);
-
-              if should_capture {
-                  let output = std::process::Command::new(&helper_path_capture)
-                      .output();
-
-                  match output {
-                      Ok(out) => {
-                          if out.status.success() {
-                              let stdout_str = String::from_utf8_lossy(&out.stdout);
-                              if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
-                                  if let Some(status) = parsed.get("status").and_then(|v| v.as_str()) {
-                                      if status == "Success" {
-                                          // Permission works — clear the denied flag
-                                          permission_denied = false;
-
-                                          let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                          let char_count = parsed.get("char_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-
-                                          // Mark this attempt as done no matter whether we store it,
-                                          // so an unchanged screen is not re-OCRed every tick
-                                          last_app = Some(app_name.clone());
-                                          last_window = window_title.clone();
-                                          last_capture_time = Instant::now();
-
-                                          // Quality gate: no substantive content left after filtering
-                                          if char_count < MIN_CAPTURE_CHARS {
-                                              println!(
-                                                  "[Vera Capture] SKIP (low-content, {} chars) — {}",
-                                                  char_count, app_name
-                                              );
-                                              continue;
-                                          }
-
-                                          // Dedup: near-identical to one of the recent captures (static UI / recurring banner)
-                                          let tokens = text_token_set(&text);
-                                          let is_near_duplicate = recent_capture_texts
-                                              .iter()
-                                              .any(|prev| jaccard_similarity(prev, &tokens) > CAPTURE_SIMILARITY_SKIP);
-                                          if is_near_duplicate {
-                                              println!(
-                                                  "[Vera Capture] SKIP (near-duplicate of recent) — {}",
-                                                  app_name
-                                              );
-                                              continue;
-                                          }
-                                          if recent_capture_texts.len() >= RECENT_CAPTURE_WINDOW {
-                                              recent_capture_texts.pop_front();
-                                          }
-                                          recent_capture_texts.push_back(tokens);
-
-                                          println!(
-                                              "[Vera Capture] STORE ({} chars) — {}{}",
-                                              char_count,
-                                              app_name,
-                                              window_title.as_deref().map(|w| format!(" — {}", w)).unwrap_or_default()
-                                          );
-
-                                          // Persist on the backend so capture survives the window
-                                          // being hidden/closed; notify the UI to refresh + backfill.
-                                          match persist_capture(&app_handle_capture, &app_name, window_title.as_deref(), &text) {
-                                              Ok(()) => {
-                                                  let _ = app_handle_capture.emit("capture-stored", ());
-                                              }
-                                              Err(e) => {
-                                                  eprintln!("[Vera Capture] persist failed: {}", e);
-                                                  let _ = app_handle_capture.emit("capture-error", &e);
-                                              }
-                                          }
-                                      } else if status == "Skipped" {
-                                          // Sidecar declined to capture (e.g. Vera was frontmost).
-                                          // Advance the markers so we don't re-spawn every tick.
-                                          last_app = Some(app_name.clone());
-                                          last_window = window_title.clone();
-                                          last_capture_time = Instant::now();
-                                          let reason = parsed.get("reason").and_then(|v| v.as_str()).unwrap_or("unspecified");
-                                          println!("[Vera Capture] SKIP (sidecar: {}) — {}", reason, app_name);
-                                      } else if status == "PermissionRequired" {
-                                          // Stop spamming — back off for 60 seconds
-                                          permission_denied = true;
-                                          last_permission_check = Instant::now();
-                                          println!("[Vera] Screen recording permission denied. Will retry in 60s.");
-
-                                          let payload = CapturePayload {
-                                              app_name: app_name.clone(),
-                                              window_title: window_title.clone(),
-                                              ocr_text: String::new(),
-                                              char_count: 0,
-                                              status: "PermissionRequired".to_string(),
-                                              error: Some("Screen Recording permission required".to_string()),
-                                          };
-                                          let _ = app_handle_capture.emit("screen-capture", &payload);
-                                      } else {
-                                          let err_msg = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
-                                          let payload = CapturePayload {
-                                              app_name: app_name.clone(),
-                                              window_title: window_title.clone(),
-                                              ocr_text: String::new(),
-                                              char_count: 0,
-                                              status: "Error".to_string(),
-                                              error: Some(err_msg),
-                                          };
-                                          let _ = app_handle_capture.emit("screen-capture", &payload);
-                                      }
-                                  }
-                              }
-                          } else {
-                              let stderr_str = String::from_utf8_lossy(&out.stderr).into_owned();
-                              let payload = CapturePayload {
-                                  app_name: app_name.clone(),
-                                  window_title: window_title.clone(),
-                                  ocr_text: String::new(),
-                                  char_count: 0,
-                                  status: "Error".to_string(),
-                                  error: Some(format!("Sidecar exited with non-zero code. Stderr: {}", stderr_str)),
-                              };
-                              let _ = app_handle_capture.emit("screen-capture", &payload);
-                          }
-                      }
-                      Err(e) => {
-                          let payload = CapturePayload {
-                              app_name: app_name.clone(),
-                              window_title: window_title.clone(),
-                              ocr_text: String::new(),
-                              char_count: 0,
-                              status: "Error".to_string(),
-                              error: Some(format!("Failed to execute sidecar binary: {:?}", e)),
-                          };
-                          let _ = app_handle_capture.emit("screen-capture", &payload);
-                      }
-                  }
-              }
-          }
+          frame_supervisor_loop(app_handle_frames, frame_helper);
       });
 
       Ok(())

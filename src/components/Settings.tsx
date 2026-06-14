@@ -14,6 +14,7 @@ const errorToMessage = (err: any): string =>
 
 export const Settings: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
+  const [framesEnabled, setFramesEnabled] = useState<boolean>(false);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
@@ -72,8 +73,9 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
+      const [paused, framesOn, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
         settingsRepo.getCapturePaused(),
+        settingsRepo.getFramesCaptureEnabled(),
         settingsRepo.getExcludedApps(),
         settingsRepo.getExcludedDomains(),
         settingsRepo.getRedactionEnabled(),
@@ -86,6 +88,7 @@ export const Settings: React.FC = () => {
       ]);
 
       setIsPaused(paused);
+      setFramesEnabled(framesOn);
       setExcludedApps(apps);
       setExcludedDomains(domains);
       setRedactionEnabled(redaction);
@@ -321,6 +324,18 @@ export const Settings: React.FC = () => {
       setOllamaError(`Failed to pull ${cleaned}: ${err.message || err}`);
       setPullingModel(null);
       setPullProgress(null);
+    }
+  };
+
+  const handleToggleFrames = async () => {
+    const nextState = !framesEnabled;
+    setFramesEnabled(nextState);
+    try {
+      await settingsRepo.setFramesCaptureEnabled(nextState);
+      await invoke("set_frames_capture_enabled", { enabled: nextState });
+    } catch (err) {
+      console.error("Failed to toggle frame capture:", err);
+      setFramesEnabled(!nextState); // revert on failure
     }
   };
 
@@ -777,6 +792,26 @@ export const Settings: React.FC = () => {
                 />
                 {isPaused ? "Paused" : "Active"}
               </button>
+            </div>
+          </div>
+
+          {/* Frame-based Screen Recording Card (default OFF) */}
+          <div className="card-style p-5 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Screen recording (frames)
+                </span>
+                <span className="font-sans text-[12px] text-text-muted leading-normal">
+                  Periodically saves a downscaled snapshot of your screen (about once per second, only when the view changes) so Vera can build a richer visual memory. Stored locally on this Mac; off by default.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={framesEnabled}
+                onChange={handleToggleFrames}
+                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
+              />
             </div>
           </div>
 

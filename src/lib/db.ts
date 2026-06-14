@@ -572,6 +572,25 @@ export const settingsRepo = {
     );
   },
 
+  async getFramesCaptureEnabled(): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'frames_capture_enabled'"
+    );
+    if (rows.length > 0) {
+      return rows[0].value === "true";
+    }
+    return false; // default OFF
+  },
+
+  async setFramesCaptureEnabled(enabled: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_capture_enabled', $1)",
+      [String(enabled)]
+    );
+  },
+
   async getExcludedApps(): Promise<string[]> {
     const db = await getDb();
     const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'excluded_apps'");
@@ -882,6 +901,7 @@ export async function initializeDefaultSettings() {
   ];
 
   await checkAndSeed("capture_paused", "false"); // active/not-paused by default for new installs
+  await checkAndSeed("frames_capture_enabled", "false"); // frame-based screen recording OFF by default
   await checkAndSeed("excluded_apps", JSON.stringify(defaultApps));
   await checkAndSeed("excluded_domains", "[]");
   await checkAndSeed("redaction_enabled", "true");
