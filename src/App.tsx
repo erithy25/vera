@@ -11,6 +11,7 @@ import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
 import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, capturesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { ollamaClient } from "./lib/ollama";
 
 async function backfillEmbeddings() {
@@ -88,6 +89,15 @@ function App() {
         setDbReady(true);
         // Run embedding backfill in background
         backfillEmbeddings();
+        // If screen recording is on, unlock the encrypted media store (Touch ID)
+        // so backend capture can resume. Failure leaves recording locked, not broken.
+        try {
+          if (await settingsRepo.getFramesCaptureEnabled()) {
+            await invoke("vault_unlock");
+          }
+        } catch (err) {
+          console.error("Recording store stayed locked (Touch ID declined):", err);
+        }
       } catch (err) {
         console.error("Vera Database initialization failed:", err);
         // Fall back to ready state so the UI still displays even if DB fails

@@ -22,6 +22,7 @@ const formatBytes = (n: number): string => {
 export const Settings: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
   const [framesEnabled, setFramesEnabled] = useState<boolean>(false);
+  const [vaultUnlocked, setVaultUnlocked] = useState<boolean>(false);
   const [framesStorageBytes, setFramesStorageBytes] = useState<number>(0);
   const [framesMaxStorageMb, setFramesMaxStorageMb] = useState<number>(2048);
   const [framesRetentionDays, setFramesRetentionDays] = useState<number>(30);
@@ -108,8 +109,9 @@ export const Settings: React.FC = () => {
       setFramesRetentionDays(await settingsRepo.getFramesRetentionDays());
       try {
         setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
+        setVaultUnlocked(await invoke<boolean>("is_vault_unlocked"));
       } catch (err) {
-        console.error("Failed to read frame storage size:", err);
+        console.error("Failed to read frame storage/vault state:", err);
       }
       setExcludedDomains(domains);
       setRedactionEnabled(redaction);
@@ -348,8 +350,24 @@ export const Settings: React.FC = () => {
     }
   };
 
+  const handleVaultUnlock = async () => {
+    try {
+      await invoke("vault_unlock"); // Touch ID
+      setVaultUnlocked(true);
+      return true;
+    } catch (err) {
+      console.error("Vault unlock failed:", err);
+      return false;
+    }
+  };
+
   const handleToggleFrames = async () => {
     const nextState = !framesEnabled;
+    // Turning recording on requires unlocking the encrypted store with Touch ID.
+    if (nextState && !vaultUnlocked) {
+      const ok = await handleVaultUnlock();
+      if (!ok) return; // stay off if the user cancels Touch ID
+    }
     setFramesEnabled(nextState);
     try {
       await settingsRepo.setFramesCaptureEnabled(nextState);
@@ -901,6 +919,25 @@ export const Settings: React.FC = () => {
                 className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
               />
             </div>
+
+            {framesEnabled && (
+              <div className="flex items-center justify-between gap-2 pt-3 border-t border-border-hairline">
+                <span className="font-sans text-[12px] text-text-faint flex items-center gap-1.5">
+                  <Shield size={12} />
+                  {vaultUnlocked
+                    ? "Encrypted at rest · unlocked this session"
+                    : "Encrypted · locked — unlock to record"}
+                </span>
+                {!vaultUnlocked && (
+                  <button
+                    onClick={handleVaultUnlock}
+                    className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    Unlock with Touch ID
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Frame Storage (usage + budget + retention) Card */}

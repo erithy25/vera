@@ -33,6 +33,9 @@ extern "C" {
     fn ffi_check_screen_recording_permission() -> bool;
     #[link_name = "request_screen_recording_permission"]
     fn ffi_request_screen_recording_permission() -> bool;
+    // Media-key vault (Keychain + Touch ID / Secure Enclave). See src/vault.m.
+    fn vault_has_key() -> i32;
+    fn vault_get_or_create(out: *mut u8) -> i32;
 }
 
 struct PrivacySettings {
@@ -58,6 +61,13 @@ struct TrayHandles {
 struct FrameCaptureState {
     enabled: Mutex<bool>,
     child: Mutex<Option<std::process::Child>>,
+}
+
+// The AES-256 media key, held in memory only for the unlocked session. It is
+// loaded from the Keychain (Touch ID) on unlock and dropped on lock/quit. Never
+// logged, never written to disk.
+struct VaultState {
+    key: Mutex<Option<[u8; 32]>>,
 }
 
 // Near-identical re-capture dedup window for the startup cleanup of the legacy
@@ -507,6 +517,120 @@ fn apply_pause(app: &tauri::AppHandle, paused: bool) {
 // stop otherwise) and persists each frame into the `frames` table. It is fully
 // backend-driven, so capture keeps running with the window hidden or closed.
 
+// ---------- Media-key vault + AES-256-GCM encryption at rest ----------
+// The key lives in the Keychain (Touch ID / Secure Enclave) and, once unlocked,
+// in VaultState for the session only. Media files (HEVC segments + thumbnails)
+// are encrypted in place; retrieval decrypts to a temp file on demand.
+
+/// Encrypted file format: b"VEG1" || nonce(12) || ciphertext+tag.
+const VAULT_MAGIC: &[u8; 4] = b"VEG1";
+
+fn current_media_key(app: &tauri::AppHandle) -> Option<[u8; 32]> {
+    app.state::<VaultState>().key.lock().ok().and_then(|k| *k)
+}
+
+fn vault_is_unlocked(app: &tauri::AppHandle) -> bool {
+    current_media_key(app).is_some()
+}
+
+fn is_encrypted(data: &[u8]) -> bool {
+    data.len() >= 4 && &data[0..4] == VAULT_MAGIC
+}
+
+fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+    use aes_gcm::{Aes256Gcm, Key};
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ct = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| "encrypt failed".to_string())?;
+    let mut out = Vec::with_capacity(4 + 12 + ct.len());
+    out.extend_from_slice(VAULT_MAGIC);
+    out.extend_from_slice(nonce.as_slice());
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+fn decrypt_bytes(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    if data.len() < 4 + 12 + 16 || &data[0..4] != VAULT_MAGIC {
+        return Err("not an encrypted vault file".to_string());
+    }
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(&data[4..16]);
+    cipher
+        .decrypt(nonce, &data[16..])
+        .map_err(|_| "decrypt failed (wrong key or corrupt)".to_string())
+}
+
+/// Encrypt a media file in place (atomic). No-op if already encrypted; errors
+/// if the vault is locked (the supervisor only captures while unlocked).
+fn encrypt_file_in_place(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    let key = current_media_key(app).ok_or_else(|| "vault locked".to_string())?;
+    let plaintext = std::fs::read(path).map_err(|e| format!("read for encrypt: {}", e))?;
+    if is_encrypted(&plaintext) {
+        return Ok(());
+    }
+    let ct = encrypt_bytes(&key, &plaintext)?;
+    let tmp = path.with_extension("enc.tmp");
+    std::fs::write(&tmp, &ct).map_err(|e| format!("write enc: {}", e))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename enc: {}", e))?;
+    Ok(())
+}
+
+/// Decrypt a media file to a destination (used for on-the-fly retrieval). A
+/// not-yet-encrypted file (e.g. the active segment) is copied through.
+fn decrypt_file_to(app: &tauri::AppHandle, src: &Path, dest: &Path) -> Result<(), String> {
+    let key = current_media_key(app).ok_or_else(|| "vault locked".to_string())?;
+    let data = std::fs::read(src).map_err(|e| format!("read for decrypt: {}", e))?;
+    let plaintext = if is_encrypted(&data) {
+        decrypt_bytes(&key, &data)?
+    } else {
+        data
+    };
+    std::fs::write(dest, &plaintext).map_err(|e| format!("write dec: {}", e))?;
+    Ok(())
+}
+
+/// Load the media key from the Keychain (Touch ID) into the session; blocking
+/// on the biometric prompt. Generates + stores a key on first use.
+fn vault_unlock_blocking(app: &tauri::AppHandle) -> Result<(), String> {
+    if vault_is_unlocked(app) {
+        return Ok(());
+    }
+    let mut buf = [0u8; 32];
+    let rc = unsafe { vault_get_or_create(buf.as_mut_ptr()) };
+    if rc != 0 {
+        buf.iter_mut().for_each(|b| *b = 0);
+        return Err(format!("Touch ID unlock failed (code {})", rc));
+    }
+    if let Ok(mut k) = app.state::<VaultState>().key.lock() {
+        *k = Some(buf);
+    }
+    buf.iter_mut().for_each(|b| *b = 0);
+    println!("[Vera Vault] media key unlocked for this session");
+    Ok(())
+}
+
+#[tauri::command]
+async fn vault_unlock(app: tauri::AppHandle) -> Result<(), String> {
+    vault_unlock_blocking(&app)
+}
+
+#[tauri::command]
+fn is_vault_unlocked(app: tauri::AppHandle) -> bool {
+    vault_is_unlocked(&app)
+}
+
+#[tauri::command]
+fn has_vault_key() -> bool {
+    unsafe { vault_has_key() == 1 }
+}
+
+// ---------- Frame-based screen recording (SCStream sidecar) ----------
+
 /// Directory for frame images: <app data>/frames (local, never iCloud).
 fn frames_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app
@@ -739,14 +863,20 @@ async fn extract_frame_near(app: tauri::AppHandle, timestamp: i64) -> Result<Str
         .path()
         .resolve("binaries/frame-extract", tauri::path::BaseDirectory::Resource)
         .map_err(|e| format!("frame-extract helper not found: {}", e))?;
+
+    // Decrypt the segment to a transient plaintext .mov, extract, then delete it.
+    let temp_mov = std::env::temp_dir().join(format!("vera-seg-{}.mov", now_epoch_ms()));
+    decrypt_file_to(&app, Path::new(&seg_path), &temp_mov)?;
+
     let out = std::env::temp_dir().join(format!("vera-frame-{}.jpg", now_epoch_ms()));
     let output = std::process::Command::new(&helper)
-        .arg(&seg_path)
+        .arg(&temp_mov)
         .arg(frame_index.to_string())
         .arg(&out)
         .arg("1")
-        .output()
-        .map_err(|e| format!("run frame-extract: {}", e))?;
+        .output();
+    let _ = std::fs::remove_file(&temp_mov); // never leave plaintext media around
+    let output = output.map_err(|e| format!("run frame-extract: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).unwrap_or(serde_json::Value::Null);
@@ -907,6 +1037,10 @@ fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), St
         rusqlite::params![timestamp, app_name, window_title, url, safe_text, phash, segment_id, frame_index, thumbnail_path],
     )
     .map_err(|e| format!("insert frame: {}", e))?;
+    // Encrypt the thumbnail at rest (capture only runs while the vault is unlocked).
+    if let Err(e) = encrypt_file_in_place(app, Path::new(thumbnail_path)) {
+        eprintln!("[Vera Vault] thumbnail encrypt failed: {}", e);
+    }
     let _ = app.emit("frame-stored", ());
     Ok(())
 }
@@ -945,11 +1079,28 @@ fn persist_segment_closed(app: &tauri::AppHandle, v: &serde_json::Value) -> Resu
         .and_then(|x| x.as_i64())
         .unwrap_or_else(|| now_epoch_ms() as i64);
     let conn = open_frames_db(app)?;
+    let seg_path: Option<String> = conn
+        .query_row("SELECT path FROM segments WHERE id = ?1", rusqlite::params![id], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten();
     conn.execute(
         "UPDATE segments SET ended_at = ?1, frame_count = ?2, size_bytes = ?3 WHERE id = ?4",
         rusqlite::params![ended_at, frame_count, size_bytes, id],
     )
     .map_err(|e| format!("update segment: {}", e))?;
+
+    // Encrypt the finalized segment at rest, then record its ciphertext size.
+    if let Some(path) = seg_path {
+        if let Err(e) = encrypt_file_in_place(app, Path::new(&path)) {
+            eprintln!("[Vera Vault] segment encrypt failed: {}", e);
+        } else if let Ok(meta) = std::fs::metadata(&path) {
+            let _ = conn.execute(
+                "UPDATE segments SET size_bytes = ?1 WHERE id = ?2",
+                rusqlite::params![meta.len() as i64, id],
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1097,7 +1248,9 @@ fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
                 .lock()
                 .map(|s| s.paused)
                 .unwrap_or(true);
-            enabled && !paused
+            // Only capture while the media key is unlocked, so every frame can
+            // be encrypted at rest (no plaintext we cannot protect).
+            enabled && !paused && vault_is_unlocked(&app)
         };
 
         // Is the sidecar alive? Reap it if it exited on its own.
@@ -1909,6 +2062,9 @@ pub fn run() {
       enabled: Mutex::new(false), // default OFF; resolved from settings in setup()
       child: Mutex::new(None),
     })
+    .manage(VaultState {
+      key: Mutex::new(None), // locked until Touch ID unlock
+    })
     .invoke_handler(tauri::generate_handler![
       has_accessibility_permission,
       request_accessibility_permission,
@@ -1928,7 +2084,10 @@ pub fn run() {
       get_frames_storage_bytes,
       extract_frame_near,
       delete_frames_range,
-      clear_all_frames
+      clear_all_frames,
+      vault_unlock,
+      is_vault_unlocked,
+      has_vault_key
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
