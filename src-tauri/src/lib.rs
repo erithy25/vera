@@ -255,7 +255,6 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// Port of isLuhnValid (src/lib/db.ts).
-#[allow(dead_code)] // reused by on-frame redaction in a later prompt
 fn is_luhn_valid(s: &str) -> bool {
     let mut sum = 0u32;
     let mut double = false;
@@ -279,7 +278,6 @@ fn is_luhn_valid(s: &str) -> bool {
 
 /// Port of redactSensitiveData (src/lib/db.ts). Regex literals are compiled
 /// with `.ok()` so a (theoretically impossible) bad pattern can never panic.
-#[allow(dead_code)] // reused by on-frame redaction in a later prompt
 fn redact_sensitive_data(text: &str) -> String {
     let mut out = text.to_string();
 
@@ -764,6 +762,88 @@ async fn extract_frame_near(app: tauri::AppHandle, timestamp: i64) -> Result<Str
     }
 }
 
+/// Delete every segment whose time span overlaps [start, end] — including its
+/// .mov, its thumbnails, and its frame rows — plus any orphan frame rows in the
+/// range. Whole overlapping segments are removed (privacy-first: the deleted
+/// time range's pixels never survive, even if a segment straddles the edge).
+/// Returns the number of segments deleted.
+fn delete_segments_overlapping(
+    conn: &rusqlite::Connection,
+    start: i64,
+    end: i64,
+) -> Result<usize, String> {
+    let targets: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, path FROM segments \
+                 WHERE started_at <= ?2 AND (ended_at IS NULL OR ended_at >= ?1)",
+            )
+            .map_err(|e| format!("prepare overlap: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params![start, end], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("query overlap: {}", e))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    for (id, path) in &targets {
+        if let Ok(mut stmt) = conn.prepare("SELECT thumbnail_path FROM frames WHERE segment_id = ?1") {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![id], |r| r.get::<_, Option<String>>(0)) {
+                for tp in rows.flatten().flatten() {
+                    let _ = std::fs::remove_file(&tp);
+                }
+            }
+        }
+        let _ = conn.execute("DELETE FROM frames WHERE segment_id = ?1", rusqlite::params![id]);
+        let _ = std::fs::remove_file(path);
+        let _ = conn.execute("DELETE FROM segments WHERE id = ?1", rusqlite::params![id]);
+    }
+
+    // Orphan rows (legacy/segment-less) inside the range.
+    let _ = conn.execute(
+        "DELETE FROM frames WHERE segment_id IS NULL AND timestamp >= ?1 AND timestamp <= ?2",
+        rusqlite::params![start, end],
+    );
+    Ok(targets.len())
+}
+
+/// Stop the live sidecar so the open segment is finalized + closed; the
+/// supervisor respawns it within ~2s if capture is still enabled.
+fn finalize_open_segment(app: &tauri::AppHandle) {
+    if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
+        if let Some(child) = g.take() {
+            stop_frame_child(child);
+        }
+    }
+}
+
+/// Delete all frame data in [start_ms, end_ms]. Finalizes the active segment
+/// first so the current block is included.
+#[tauri::command]
+fn delete_frames_range(app: tauri::AppHandle, start_ms: i64, end_ms: i64) -> Result<usize, String> {
+    finalize_open_segment(&app);
+    let conn = open_frames_db(&app)?;
+    let n = delete_segments_overlapping(&conn, start_ms, end_ms)?;
+    println!("[Vera Frames] deleted {} segment(s) in range", n);
+    Ok(n)
+}
+
+/// Wipe the entire frame store: all segments, thumbnails, rows, and files.
+#[tauri::command]
+fn clear_all_frames(app: tauri::AppHandle) -> Result<(), String> {
+    finalize_open_segment(&app);
+    let conn = open_frames_db(&app)?;
+    let _ = conn.execute("DELETE FROM frames", []);
+    let _ = conn.execute("DELETE FROM segments", []);
+    if let Ok(root) = frames_dir(&app) {
+        let _ = std::fs::remove_dir_all(root.join("segments"));
+        let _ = std::fs::remove_dir_all(root.join("thumbs"));
+    }
+    println!("[Vera Frames] cleared all frame data");
+    Ok(())
+}
+
 /// Persist the frames-enabled flag so the supervisor resumes after a restart.
 fn persist_frames_enabled(app: &tauri::AppHandle, enabled: bool) {
     if let Ok(conn) = open_vera_db(app) {
@@ -815,12 +895,16 @@ fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), St
         None
     };
 
+    // Defense in depth: the sidecar already redacts on-frame text, but redact
+    // the stored OCR text again here so a secret can never reach the database.
+    let safe_text = redact_sensitive_data(ocr_text);
+
     let conn = open_frames_db(app)?;
     conn.execute(
         "INSERT INTO frames \
            (timestamp, app, window_title, url, ocr_text, image_path, perceptual_hash, segment_id, frame_index, thumbnail_path) \
          VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9)",
-        rusqlite::params![timestamp, app_name, window_title, url, ocr_text, phash, segment_id, frame_index, thumbnail_path],
+        rusqlite::params![timestamp, app_name, window_title, url, safe_text, phash, segment_id, frame_index, thumbnail_path],
     )
     .map_err(|e| format!("insert frame: {}", e))?;
     let _ = app.emit("frame-stored", ());
@@ -1842,7 +1926,9 @@ pub fn run() {
       set_frames_capture_enabled,
       is_frames_capture_enabled,
       get_frames_storage_bytes,
-      extract_frame_near
+      extract_frame_near,
+      delete_frames_range,
+      clear_all_frames
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

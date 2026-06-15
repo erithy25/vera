@@ -25,6 +25,9 @@ export const Settings: React.FC = () => {
   const [framesStorageBytes, setFramesStorageBytes] = useState<number>(0);
   const [framesMaxStorageMb, setFramesMaxStorageMb] = useState<number>(2048);
   const [framesRetentionDays, setFramesRetentionDays] = useState<number>(30);
+  const [deleteFrom, setDeleteFrom] = useState<string>("");
+  const [deleteTo, setDeleteTo] = useState<string>("");
+  const [deleteBusy, setDeleteBusy] = useState<boolean>(false);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
@@ -380,6 +383,47 @@ export const Settings: React.FC = () => {
       setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
     } catch (err) {
       console.error("Failed to read frame storage size:", err);
+    }
+  };
+
+  const runDeleteRange = async (startMs: number, endMs: number) => {
+    setDeleteBusy(true);
+    try {
+      await invoke<number>("delete_frames_range", { startMs, endMs });
+      await refreshFramesStorage();
+    } catch (err) {
+      console.error("Failed to delete recordings:", err);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleFramesDeleteLast15 = () => runDeleteRange(Date.now() - 15 * 60 * 1000, Date.now());
+
+  const handleFramesDeleteToday = () => {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return runDeleteRange(midnight, Date.now());
+  };
+
+  const handleFramesDeleteRange = () => {
+    if (!deleteFrom || !deleteTo) return;
+    const start = new Date(deleteFrom).getTime();
+    const end = new Date(deleteTo).getTime() + 24 * 60 * 60 * 1000 - 1; // include the whole 'to' day
+    if (isNaN(start) || isNaN(end) || start > end) return;
+    return runDeleteRange(start, end);
+  };
+
+  const handleFramesClearAll = async () => {
+    if (!window.confirm("Delete ALL captured screen recordings? This cannot be undone.")) return;
+    setDeleteBusy(true);
+    try {
+      await invoke("clear_all_frames");
+      await refreshFramesStorage();
+    } catch (err) {
+      console.error("Failed to clear recordings:", err);
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -927,6 +971,69 @@ export const Settings: React.FC = () => {
                 })}
               </div>
             </div>
+          </div>
+
+          {/* Recording Data Management Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-serif text-[17px] font-normal text-text-primary">
+                Recording Data
+              </span>
+              <span className="font-sans text-[12px] text-text-faint">
+                Delete captured screen history from this Mac
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleFramesDeleteLast15}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete last 15 min
+              </button>
+              <button
+                onClick={handleFramesDeleteToday}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete today
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Delete a date range</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  value={deleteFrom}
+                  onChange={(e) => setDeleteFrom(e.target.value)}
+                  className="px-2 py-1.5 border border-border-hairline rounded-lg text-[12px] font-sans bg-card-surface text-text-primary"
+                />
+                <span className="text-text-faint text-[12px]">to</span>
+                <input
+                  type="date"
+                  value={deleteTo}
+                  onChange={(e) => setDeleteTo(e.target.value)}
+                  className="px-2 py-1.5 border border-border-hairline rounded-lg text-[12px] font-sans bg-card-surface text-text-primary"
+                />
+                <button
+                  onClick={handleFramesDeleteRange}
+                  disabled={deleteBusy || !deleteFrom || !deleteTo}
+                  className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+                >
+                  Delete range
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={handleFramesClearAll}
+              disabled={deleteBusy}
+              className="self-start px-3 py-1.5 border border-red-500/30 rounded-full text-[12px] font-sans font-medium text-red-600 hover:bg-red-500/5 transition-all cursor-pointer disabled:opacity-50"
+            >
+              Delete all recordings
+            </button>
           </div>
 
           {/* Sensitive-data Redaction Card */}

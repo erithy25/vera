@@ -316,10 +316,22 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
-        // Encode into the current segment (synchronous: the pixel buffer is only
-        // valid for the duration of this callback).
+        // OCR synchronously so on-frame secrets are painted out BEFORE encoding.
+        let observations = Capturer.recognizeText(cgImage)
+        let redaction = Capturer.redactFrame(
+            pixelBuffer: pixelBuffer, cgImage: cgImage, ciImage: ciImage,
+            observations: observations, ciContext: ciContext
+        )
+        // Fail-safe: if a frame had secrets but could not be redacted, store nothing.
+        guard let frameBuffer = redaction.buffer, let frameImage = redaction.image else {
+            emitLog("skipped a frame: redaction could not be applied")
+            return
+        }
+
+        // Encode the (redacted) frame into the current segment (synchronous: the
+        // pixel buffer is only valid for the duration of this callback).
         rotateIfNeeded(width: cgImage.width, height: cgImage.height)
-        guard let seg = segment, let index = seg.append(pixelBuffer) else {
+        guard let seg = segment, let index = seg.append(frameBuffer) else {
             if let s = segment, s.failed { closeSegment() }
             return
         }
@@ -327,10 +339,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
         lastHash = hash
         let hashHex = String(format: "%016llx", hash)
+        let safeText = redaction.text
 
         processQueue.async { [weak self] in
-            self?.processKeptFrame(cgImage, hashHex: hashHex, app: appName, bundle: bundleId,
-                                   pid: pid, segmentId: segId, frameIndex: index)
+            self?.emitKeptFrame(frameImage, ocrText: safeText, hashHex: hashHex, app: appName,
+                                bundle: bundleId, pid: pid, segmentId: segId, frameIndex: index)
         }
     }
 
@@ -399,8 +412,10 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         return false
     }
 
-    private func processKeptFrame(_ cgImage: CGImage, hashHex: String, app: String, bundle: String,
-                                  pid: pid_t, segmentId: String, frameIndex: Int) {
+    /// Write the thumbnail (already redacted) and emit the frame line. No OCR
+    /// here — recognition + redaction happened synchronously before encoding.
+    private func emitKeptFrame(_ cgImage: CGImage, ocrText: String, hashHex: String, app: String,
+                               bundle: String, pid: pid_t, segmentId: String, frameIndex: Int) {
         let thumbDir = (opts.outDir as NSString).appendingPathComponent("thumbs")
         try? FileManager.default.createDirectory(atPath: thumbDir, withIntermediateDirectories: true)
         let thumbPath = (thumbDir as NSString).appendingPathComponent("\(UUID().uuidString).jpg")
@@ -409,7 +424,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
-        let ocr = Capturer.runOCR(cgImage)
         let title = pid >= 0 ? Capturer.windowTitle(forPID: pid) : nil
 
         var obj: [String: Any] = [
@@ -417,7 +431,7 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             "timestamp": nowMs(),
             "app": app,
             "bundle_id": bundle,
-            "ocr_text": ocr,
+            "ocr_text": ocrText,
             "thumbnail_path": thumbPath,
             "perceptual_hash": hashHex,
             "segment_id": segmentId,
@@ -480,7 +494,8 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    static func runOCR(_ cgImage: CGImage) -> String {
+    /// Run Vision OCR and return the raw observations (text + bounding boxes).
+    static func recognizeText(_ cgImage: CGImage) -> [VNRecognizedTextObservation] {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
@@ -488,16 +503,39 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         do {
             try handler.perform([request])
         } catch {
-            return ""
+            return []
         }
-        guard let observations = request.results as? [VNRecognizedTextObservation] else { return "" }
+        return (request.results as? [VNRecognizedTextObservation]) ?? []
+    }
 
+    /// Result of on-frame redaction: the pixel buffer to encode + the image to
+    /// thumbnail (both with secrets painted black) + the safe OCR text.
+    struct Redaction {
+        let buffer: CVPixelBuffer?
+        let image: CGImage?
+        let text: String
+    }
+
+    /// Detect likely secrets among the OCR observations, paint a filled black
+    /// rectangle over each on a copy of the frame (Core Image, same bottom-left
+    /// space as Vision), and build the safe OCR text. Returns nil buffer/image
+    /// only when secrets were found but could not be painted — the caller drops
+    /// the frame (fail-safe: never store an un-redacted secret).
+    static func redactFrame(pixelBuffer: CVPixelBuffer, cgImage: CGImage, ciImage: CIImage,
+                            observations: [VNRecognizedTextObservation], ciContext: CIContext) -> Redaction {
         var mainLines: [String] = []
         var edgeLines: [String] = []
+        var secretBoxes: [CGRect] = []
+
         for observation in observations {
             guard let candidate = observation.topCandidates(1).first else { continue }
-            let line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !isSubstantiveLine(line) { continue }
+            var line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let wasSecret = isLikelySecret(line)
+            if wasSecret {
+                secretBoxes.append(observation.boundingBox)
+                line = redactText(line)
+            }
+            if !wasSecret && !isSubstantiveLine(line) { continue }
             let box = observation.boundingBox
             if box.midX < 0.2 || box.midX > 0.8 {
                 edgeLines.append(line)
@@ -506,8 +544,43 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
         let mainText = mainLines.joined(separator: "\n")
-        let finalText = mainText.count >= 200 ? mainText : (mainLines + edgeLines).joined(separator: "\n")
-        return finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeText = (mainText.count >= 200 ? mainText : (mainLines + edgeLines).joined(separator: "\n"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if secretBoxes.isEmpty {
+            return Redaction(buffer: pixelBuffer, image: cgImage, text: safeText)
+        }
+
+        let extent = ciImage.extent
+        var composited = ciImage
+        for box in secretBoxes {
+            let rect = CGRect(
+                x: box.minX * extent.width - 6,
+                y: box.minY * extent.height - 6,
+                width: box.width * extent.width + 12,
+                height: box.height * extent.height + 12
+            ).intersection(extent)
+            if rect.isNull || rect.isEmpty { continue }
+            let black = CIImage(color: CIColor.black).cropped(to: rect)
+            composited = black.composited(over: composited)
+        }
+
+        var outBuffer: CVPixelBuffer?
+        let attrs: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ]
+        CVPixelBufferCreate(kCFAllocatorDefault, Int(extent.width), Int(extent.height),
+                            kCVPixelFormatType_32BGRA, attrs as CFDictionary, &outBuffer)
+        guard let outBuffer = outBuffer else {
+            return Redaction(buffer: nil, image: nil, text: safeText)
+        }
+        ciContext.render(composited, to: outBuffer)
+        guard let redactedImage = ciContext.createCGImage(composited, from: extent) else {
+            return Redaction(buffer: nil, image: nil, text: safeText)
+        }
+        return Redaction(buffer: outBuffer, image: redactedImage, text: safeText)
     }
 
     static func windowTitle(forPID pid: pid_t) -> String? {
@@ -532,6 +605,93 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         return bestTitle
     }
+}
+
+// MARK: - Secret detection + text redaction (extends the app's redaction logic)
+
+func shannonEntropy(_ s: String) -> Double {
+    if s.isEmpty { return 0 }
+    var counts: [Character: Int] = [:]
+    for c in s { counts[c, default: 0] += 1 }
+    let n = Double(s.count)
+    var e = 0.0
+    for (_, c) in counts {
+        let p = Double(c) / n
+        e -= p * log2(p)
+    }
+    return e
+}
+
+func luhnValid(_ s: String) -> Bool {
+    let ds = s.compactMap { $0.wholeNumberValue }
+    if ds.count < 13 || ds.count > 19 { return false }
+    var sum = 0
+    var alt = false
+    for d in ds.reversed() {
+        var x = d
+        if alt { x *= 2; if x > 9 { x -= 9 } }
+        sum += x
+        alt.toggle()
+    }
+    return sum % 10 == 0
+}
+
+let secretPatterns: [String] = [
+    "sk-(proj-)?[A-Za-z0-9]{20,}",
+    "rk_live_[A-Za-z0-9]{16,}",
+    "sk_live_[A-Za-z0-9]{16,}",
+    "ghp_[A-Za-z0-9]{36,}",
+    "AKIA[0-9A-Z]{16}",
+    "AIza[0-9A-Za-z\\-_]{20,}",
+    "eyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]*",
+    "\\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\\b",
+]
+
+func matchesRegex(_ s: String, _ pattern: String) -> Bool {
+    s.range(of: pattern, options: .regularExpression) != nil
+}
+
+func isLikelySecret(_ raw: String) -> Bool {
+    let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.count < 6 { return false }
+    let lower = s.lowercased()
+
+    for label in ["password", "passwd", "secret", "api_key", "apikey", "api key", "token", "bearer", "client_secret"] {
+        if lower.contains(label), matchesRegex(s, "[:=]\\s*\\S{4,}") {
+            return true
+        }
+    }
+    for pattern in secretPatterns where matchesRegex(s, pattern) {
+        return true
+    }
+    let stripped = s.filter { !$0.isWhitespace && $0 != "-" }
+    if stripped.count >= 13, stripped.count <= 19, stripped.allSatisfy({ $0.isNumber }), luhnValid(stripped) {
+        return true
+    }
+    if matchesRegex(s, "\\b[0-9]{10,}\\b") {
+        return true
+    }
+    for token in s.split(whereSeparator: { $0.isWhitespace }) {
+        let t = String(token)
+        if t.count >= 24, t.allSatisfy({ $0.isLetter || $0.isNumber || "+/=_-.".contains($0) }), shannonEntropy(t) >= 3.6 {
+            return true
+        }
+    }
+    return false
+}
+
+func redactText(_ s: String) -> String {
+    var out = s
+    for pattern in secretPatterns {
+        out = out.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+    }
+    out = out.replacingOccurrences(
+        of: "(?i)(password|passwd|secret|api[_ ]?key|token|bearer|client_secret)(\\s*[:=]\\s*)\\S+",
+        with: "$1$2[redacted]", options: .regularExpression
+    )
+    out = out.replacingOccurrences(of: "\\b[0-9]{10,}\\b", with: "[redacted]", options: .regularExpression)
+    if isLikelySecret(out) { return "[redacted]" }
+    return out
 }
 
 // MARK: - Entry point
