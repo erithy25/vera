@@ -69,6 +69,34 @@ fn main() {
       }
   }
 
+  // Compile the frame-extract helper (time-seek retrieval from HEVC segments).
+  let extract_source = "src/frame-extract.swift";
+  let extract_binary = "binaries/frame-extract";
+  let temp_extract_source = std::path::Path::new(&out_dir).join("frame-extract.swift");
+  std::fs::copy(extract_source, &temp_extract_source)
+      .expect("failed to copy frame-extract swift source to out_dir");
+  println!("cargo:rerun-if-changed={}", extract_source);
+
+  println!("Compiling Swift frame-extract helper at build time...");
+  let extract_status = std::process::Command::new("swiftc")
+      .arg("-O")
+      .arg(&temp_extract_source)
+      .arg("-o")
+      .arg(extract_binary)
+      .status();
+
+  match extract_status {
+      Ok(s) if s.success() => {
+          println!("Swift frame-extract helper compiled successfully to {}", extract_binary);
+      }
+      Ok(s) => {
+          panic!("swiftc compilation of frame-extract failed with status: {:?}", s);
+      }
+      Err(e) => {
+          panic!("Failed to execute swiftc compiler for frame-extract: {:?}", e);
+      }
+  }
+
   // Sign the bundled sidecars so the app passes notarization. Tauri signs the
   // main binary and the .app, but not these extra resource binaries — without a
   // Developer ID signature that has a secure timestamp and the hardened runtime
@@ -78,7 +106,7 @@ fn main() {
   if let Ok(identity) = std::env::var("APPLE_SIGNING_IDENTITY") {
       let identity = identity.trim().to_string();
       if !identity.is_empty() {
-          for sidecar in [ocr_binary, frame_binary] {
+          for sidecar in [ocr_binary, frame_binary, extract_binary] {
               println!("Signing sidecar {} with Developer ID + hardened runtime...", sidecar);
               let sign = std::process::Command::new("codesign")
                   .args([

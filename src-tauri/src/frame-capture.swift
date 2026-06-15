@@ -2,23 +2,30 @@
 //
 // A long-lived ScreenCaptureKit (SCStream) process that captures the main
 // display at a low frame rate, keeps only frames that visibly changed
-// (perceptual-hash gate), runs Apple Vision OCR on the kept frames, writes the
-// downscaled image to disk, and emits one JSON line per kept frame on stdout
-// for the Rust supervisor to persist.
+// (perceptual-hash gate), encodes the kept frames into HEVC video segments
+// (VideoToolbox via AVAssetWriter), writes a small JPEG thumbnail per kept
+// frame, runs Apple Vision OCR, and emits one JSON line per kept frame on
+// stdout for the Rust supervisor to persist.
 //
 // It is intentionally defensive: every fallible step is guarded, nothing
 // force-unwraps, and any fatal capture error is reported as a status line and
 // exits cleanly (exit code 0) so the supervisor can log + retry instead of the
-// app crashing.
+// app crashing. On SIGTERM it finalizes the open segment before exiting so the
+// .mov is valid.
 //
 // Protocol (stdout, one JSON object per line):
+//   {"type":"segment_opened","segment_id":"..","path":"..","started_at":<ms>}
 //   {"type":"frame","timestamp":<ms>,"app":"..","bundle_id":"..",
-//    "window_title":"..","ocr_text":"..","image_path":"..","perceptual_hash":".."}
+//    "window_title":"..","ocr_text":"..","thumbnail_path":"..",
+//    "perceptual_hash":"..","segment_id":"..","frame_index":<n>}
+//   {"type":"segment_closed","segment_id":"..","frame_count":<n>,
+//    "size_bytes":<n>,"ended_at":<ms>}
 //   {"type":"status","status":"PermissionRequired"|"Error","error":".."}
 //   {"type":"log","message":".."}
 //
 // Args: --out-dir <dir> --fps <n> --max-width <px> --hash-threshold <bits>
-//       --vera-bundle-id <id> --exclude <comma,separated,name-or-bundle tokens>
+//       --vera-bundle-id <id> --exclude <comma tokens>
+//       --segment-seconds <n> --thumb-width <px>
 
 import Cocoa
 import Vision
@@ -27,28 +34,32 @@ import CoreImage
 import CoreMedia
 import CoreVideo
 import CoreGraphics
+import AVFoundation
 
-// MARK: - stdout helpers (line-buffered so the supervisor sees frames promptly)
+// MARK: - stdout helpers (line-buffered + locked so lines never interleave)
 
 setvbuf(stdout, nil, _IOLBF, 0)
+let emitLock = NSLock()
 
 func emit(_ obj: [String: Any]) {
     if let data = try? JSONSerialization.data(withJSONObject: obj, options: []),
        let str = String(data: data, encoding: .utf8) {
+        emitLock.lock()
         print(str)
         fflush(stdout)
+        emitLock.unlock()
     }
 }
 
-func emitLog(_ message: String) {
-    emit(["type": "log", "message": message])
-}
+func emitLog(_ message: String) { emit(["type": "log", "message": message]) }
 
 func emitStatus(_ status: String, error: String? = nil) {
     var obj: [String: Any] = ["type": "status", "status": status]
     if let error = error { obj["error"] = error }
     emit(obj)
 }
+
+func nowMs() -> Int { Int(Date().timeIntervalSince1970 * 1000) }
 
 // MARK: - Argument parsing
 
@@ -59,6 +70,9 @@ struct Args {
     var hashThreshold: Int = 5
     var veraBundleId: String = "app.vera.desktop"
     var excludeTokens: [String] = []
+    var segmentSeconds: Double = 600
+    var thumbWidth: Int = 320
+    var maxFramesPerSegment: Int = 5000
 }
 
 func parseArgs() -> Args {
@@ -76,10 +90,11 @@ func parseArgs() -> Args {
         case "--max-width": if let v = next(), let n = Int(v), n > 0 { args.maxWidth = n }
         case "--hash-threshold": if let v = next(), let n = Int(v), n >= 0 { args.hashThreshold = n }
         case "--vera-bundle-id": if let v = next() { args.veraBundleId = v }
+        case "--segment-seconds": if let v = next(), let n = Double(v), n > 0 { args.segmentSeconds = n }
+        case "--thumb-width": if let v = next(), let n = Int(v), n > 0 { args.thumbWidth = n }
         case "--exclude":
             if let v = next() {
-                args.excludeTokens = v
-                    .split(separator: ",")
+                args.excludeTokens = v.split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                     .filter { !$0.isEmpty }
             }
@@ -117,6 +132,82 @@ func isSubstantiveLine(_ text: String) -> Bool {
     return true
 }
 
+// MARK: - HEVC segment writer (VideoToolbox via AVAssetWriter)
+
+@available(macOS 13.0, *)
+final class SegmentWriter {
+    let id: String
+    let url: URL
+    private let fps: Int32
+    private let writer: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private let adaptor: AVAssetWriterInputPixelBufferAdaptor
+    private(set) var frameCount: Int = 0
+    private(set) var failed: Bool = false
+
+    init?(dir: String, width: Int, height: Int, fps: Int32) {
+        self.id = UUID().uuidString
+        self.fps = fps
+        let segDir = (dir as NSString).appendingPathComponent("segments")
+        try? FileManager.default.createDirectory(atPath: segDir, withIntermediateDirectories: true)
+        self.url = URL(fileURLWithPath: (segDir as NSString).appendingPathComponent("\(id).mov"))
+
+        guard let writer = try? AVAssetWriter(url: url, fileType: .mov) else { return nil }
+        let settings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoMaxKeyFrameIntervalKey: 30,
+                AVVideoAverageBitRateKey: 400_000,
+            ],
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+            ]
+        )
+        guard writer.canAdd(input) else { return nil }
+        writer.add(input)
+        guard writer.startWriting() else { return nil }
+        writer.startSession(atSourceTime: .zero)
+        self.writer = writer
+        self.input = input
+        self.adaptor = adaptor
+    }
+
+    /// Append a frame. Returns the assigned frame index, or nil if not appended.
+    func append(_ pixelBuffer: CVPixelBuffer) -> Int? {
+        guard !failed, writer.status == .writing, input.isReadyForMoreMediaData else {
+            if writer.status == .failed { failed = true }
+            return nil
+        }
+        let index = frameCount
+        let pts = CMTime(value: Int64(index), timescale: fps)
+        if adaptor.append(pixelBuffer, withPresentationTime: pts) {
+            frameCount += 1
+            return index
+        }
+        failed = true
+        return nil
+    }
+
+    func finish(_ completion: @escaping (Int64) -> Void) {
+        let url = self.url
+        if writer.status == .writing { input.markAsFinished() }
+        writer.finishWriting {
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path))
+                .flatMap { ($0[.size] as? NSNumber)?.int64Value } ?? 0
+            completion(size)
+        }
+    }
+}
+
 // MARK: - Capturer
 
 @available(macOS 13.0, *)
@@ -127,10 +218,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let processQueue = DispatchQueue(label: "app.vera.frame-capture.process")
     private var stream: SCStream?
     private var lastHash: UInt64?
+    // Segment state — only ever touched on sampleQueue.
+    private var segment: SegmentWriter?
+    private var segmentStart: Date = .distantPast
 
-    init(opts: Args) {
-        self.opts = opts
-    }
+    init(opts: Args) { self.opts = opts }
 
     func start() async {
         do {
@@ -140,8 +232,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
                 exit(0)
             }
 
-            // Exclude Vera's own windows always, plus any app whose name or
-            // bundle id matches an exclude token, from the captured pixels.
             let excluded = content.applications.filter { app in
                 let name = app.applicationName.lowercased()
                 let bundle = app.bundleIdentifier.lowercased()
@@ -154,7 +244,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
             let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
 
-            // Downscale to <= maxWidth at capture time (keeps frames small).
             var targetW = display.width
             var targetH = display.height
             if targetW > self.opts.maxWidth {
@@ -175,7 +264,7 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
             try await stream.startCapture()
             self.stream = stream
-            emitLog("frame-capture started (\(config.width)x\(config.height) @ \(self.opts.fps)fps)")
+            emitLog("frame-capture started (\(config.width)x\(config.height) @ \(self.opts.fps)fps, HEVC segments)")
         } catch {
             let desc = error.localizedDescription
             if desc.contains("denied") || desc.contains("permission") || desc.contains("authorized") {
@@ -200,7 +289,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .screen else { return }
         guard CMSampleBufferIsValid(sampleBuffer) else { return }
 
-        // Only act on complete frames (ScreenCaptureKit marks idle/blank frames).
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let info = attachments.first,
               let statusRaw = info[.status] as? Int,
@@ -210,17 +298,16 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        // CGImage is an independent bitmap (safe to use off the sample queue);
+        // the pixel buffer itself is pool-backed and only valid synchronously.
         let ciImage = CIImage(cvImageBuffer: pixelBuffer)
         guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
 
-        // Cheap change detection: drop frames near-identical to the last kept one.
         guard let hash = Capturer.averageHash(cgImage) else { return }
         if let last = lastHash, Capturer.hamming(hash, last) <= opts.hashThreshold {
             return
         }
 
-        // Frontmost-app exclude gate: store nothing while an excluded app (or
-        // Vera itself) is frontmost.
         let frontmost = NSWorkspace.shared.frontmostApplication
         let appName = frontmost?.localizedName ?? "Unknown"
         let bundleId = frontmost?.bundleIdentifier ?? ""
@@ -229,13 +316,76 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
+        // Encode into the current segment (synchronous: the pixel buffer is only
+        // valid for the duration of this callback).
+        rotateIfNeeded(width: cgImage.width, height: cgImage.height)
+        guard let seg = segment, let index = seg.append(pixelBuffer) else {
+            if let s = segment, s.failed { closeSegment() }
+            return
+        }
+        let segId = seg.id
+
         lastHash = hash
         let hashHex = String(format: "%016llx", hash)
 
-        // Heavy work (disk write + OCR + window title) off the sample queue so
-        // the stream is never blocked.
         processQueue.async { [weak self] in
-            self?.processKeptFrame(cgImage, hashHex: hashHex, app: appName, bundle: bundleId, pid: pid)
+            self?.processKeptFrame(cgImage, hashHex: hashHex, app: appName, bundle: bundleId,
+                                   pid: pid, segmentId: segId, frameIndex: index)
+        }
+    }
+
+    // MARK: Segment lifecycle (sampleQueue only)
+
+    private func rotateIfNeeded(width: Int, height: Int) {
+        if let seg = segment {
+            let age = Date().timeIntervalSince(segmentStart)
+            if seg.failed || age >= opts.segmentSeconds || seg.frameCount >= opts.maxFramesPerSegment {
+                closeSegment()
+            }
+        }
+        if segment == nil {
+            openSegment(width: width, height: height)
+        }
+    }
+
+    private func openSegment(width: Int, height: Int) {
+        guard let seg = SegmentWriter(dir: opts.outDir, width: width, height: height, fps: opts.fps) else {
+            emitLog("failed to open segment writer")
+            return
+        }
+        segment = seg
+        segmentStart = Date()
+        emit(["type": "segment_opened", "segment_id": seg.id, "path": seg.url.path, "started_at": nowMs()])
+    }
+
+    private func closeSegment() {
+        guard let seg = segment else { return }
+        segment = nil
+        let endedAt = nowMs()
+        let count = seg.frameCount
+        seg.finish { size in
+            emit([
+                "type": "segment_closed", "segment_id": seg.id,
+                "frame_count": count, "size_bytes": Int(size), "ended_at": endedAt,
+            ])
+        }
+    }
+
+    /// SIGTERM handler: finalize the open segment so its .mov is valid, then exit.
+    func finalizeAndExit() {
+        sampleQueue.async { [weak self] in
+            guard let self = self else { exit(0) }
+            guard let seg = self.segment else { exit(0) }
+            self.segment = nil
+            let endedAt = nowMs()
+            let count = seg.frameCount
+            seg.finish { size in
+                emit([
+                    "type": "segment_closed", "segment_id": seg.id,
+                    "frame_count": count, "size_bytes": Int(size), "ended_at": endedAt,
+                ])
+                exit(0)
+            }
         }
     }
 
@@ -249,11 +399,13 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         return false
     }
 
-    private func processKeptFrame(_ cgImage: CGImage, hashHex: String, app: String, bundle: String, pid: pid_t) {
-        let uuid = UUID().uuidString
-        let path = (opts.outDir as NSString).appendingPathComponent("\(uuid).png")
-        guard Capturer.savePNG(cgImage, to: path) else {
-            emitLog("failed to write frame image")
+    private func processKeptFrame(_ cgImage: CGImage, hashHex: String, app: String, bundle: String,
+                                  pid: pid_t, segmentId: String, frameIndex: Int) {
+        let thumbDir = (opts.outDir as NSString).appendingPathComponent("thumbs")
+        try? FileManager.default.createDirectory(atPath: thumbDir, withIntermediateDirectories: true)
+        let thumbPath = (thumbDir as NSString).appendingPathComponent("\(UUID().uuidString).jpg")
+        guard Capturer.saveJPEGThumbnail(cgImage, to: thumbPath, maxWidth: opts.thumbWidth) else {
+            emitLog("failed to write thumbnail")
             return
         }
 
@@ -262,12 +414,14 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
         var obj: [String: Any] = [
             "type": "frame",
-            "timestamp": Int(Date().timeIntervalSince1970 * 1000),
+            "timestamp": nowMs(),
             "app": app,
             "bundle_id": bundle,
             "ocr_text": ocr,
-            "image_path": path,
+            "thumbnail_path": thumbPath,
             "perceptual_hash": hashHex,
+            "segment_id": segmentId,
+            "frame_index": frameIndex,
         ]
         if let title = title { obj["window_title"] = title }
         emit(obj)
@@ -275,7 +429,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Static helpers
 
-    /// 8x8 grayscale average hash (aHash).
     static func averageHash(_ cgImage: CGImage) -> UInt64? {
         let side = 8
         let colorSpace = CGColorSpaceCreateDeviceGray()
@@ -298,13 +451,27 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         return hash
     }
 
-    static func hamming(_ a: UInt64, _ b: UInt64) -> Int {
-        (a ^ b).nonzeroBitCount
-    }
+    static func hamming(_ a: UInt64, _ b: UInt64) -> Int { (a ^ b).nonzeroBitCount }
 
-    static func savePNG(_ cgImage: CGImage, to path: String) -> Bool {
-        let rep = NSBitmapImageRep(cgImage: cgImage)
-        guard let data = rep.representation(using: .png, properties: [:]) else { return false }
+    /// Downscale to maxWidth and JPEG-encode a thumbnail.
+    static func saveJPEGThumbnail(_ cgImage: CGImage, to path: String, maxWidth: Int) -> Bool {
+        let w = cgImage.width, h = cgImage.height
+        var tw = w, th = h
+        if w > maxWidth {
+            let scale = Double(maxWidth) / Double(w)
+            tw = maxWidth
+            th = max(1, Int((Double(h) * scale).rounded()))
+        }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
+            space: cs, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return false }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        guard let scaled = ctx.makeImage() else { return false }
+        let rep = NSBitmapImageRep(cgImage: scaled)
+        guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else { return false }
         do {
             try data.write(to: URL(fileURLWithPath: path))
             return true
@@ -313,8 +480,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// Synchronous Vision OCR with per-string bounding boxes. Boxes are used to
-    /// separate main-content text from sidebar/menu chrome.
     static func runOCR(_ cgImage: CGImage) -> String {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
@@ -345,8 +510,6 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         return finalText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Frontmost window title via window metadata (not screenshotting). Requires
-    /// Screen Recording permission for names, which this process already holds.
     static func windowTitle(forPID pid: pid_t) -> String? {
         let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let infoList = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return nil }
@@ -359,8 +522,8 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
             guard let name = info[kCGWindowName as String] as? String, !name.isEmpty else { continue }
             var area: CGFloat = 0
             if let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
-               let w = bounds["Width"], let h = bounds["Height"] {
-                area = w * h
+               let bw = bounds["Width"], let bh = bounds["Height"] {
+                area = bw * bh
             }
             if area > bestArea {
                 bestArea = area
@@ -375,9 +538,14 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
 if #available(macOS 13.0, *) {
     let capturer = Capturer(opts: options)
-    Task {
-        await capturer.start()
-    }
+
+    // Graceful shutdown: finalize the open HEVC segment on SIGTERM.
+    signal(SIGTERM, SIG_IGN)
+    let sigSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    sigSource.setEventHandler { capturer.finalizeAndExit() }
+    sigSource.resume()
+
+    Task { await capturer.start() }
     dispatchMain()
 } else {
     emitStatus("Error", error: "ScreenCaptureKit streaming requires macOS 13 or later")

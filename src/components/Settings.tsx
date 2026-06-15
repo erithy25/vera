@@ -12,9 +12,19 @@ type CloudProvider = "anthropic" | "openai";
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
 
+const formatBytes = (n: number): string => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
 export const Settings: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
   const [framesEnabled, setFramesEnabled] = useState<boolean>(false);
+  const [framesStorageBytes, setFramesStorageBytes] = useState<number>(0);
+  const [framesMaxStorageMb, setFramesMaxStorageMb] = useState<number>(2048);
+  const [framesRetentionDays, setFramesRetentionDays] = useState<number>(30);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
@@ -90,6 +100,14 @@ export const Settings: React.FC = () => {
       setIsPaused(paused);
       setFramesEnabled(framesOn);
       setExcludedApps(apps);
+
+      setFramesMaxStorageMb(await settingsRepo.getFramesMaxStorageMb());
+      setFramesRetentionDays(await settingsRepo.getFramesRetentionDays());
+      try {
+        setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
+      } catch (err) {
+        console.error("Failed to read frame storage size:", err);
+      }
       setExcludedDomains(domains);
       setRedactionEnabled(redaction);
       setRetentionDays(retention);
@@ -336,6 +354,32 @@ export const Settings: React.FC = () => {
     } catch (err) {
       console.error("Failed to toggle frame capture:", err);
       setFramesEnabled(!nextState); // revert on failure
+    }
+  };
+
+  const handleFramesStorageChange = async (mb: number) => {
+    setFramesMaxStorageMb(mb);
+    try {
+      await settingsRepo.setFramesMaxStorageMb(mb);
+    } catch (err) {
+      console.error("Failed to set frame storage budget:", err);
+    }
+  };
+
+  const handleFramesRetentionChange = async (days: number) => {
+    setFramesRetentionDays(days);
+    try {
+      await settingsRepo.setFramesRetentionDays(days);
+    } catch (err) {
+      console.error("Failed to set frame retention:", err);
+    }
+  };
+
+  const refreshFramesStorage = async () => {
+    try {
+      setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
+    } catch (err) {
+      console.error("Failed to read frame storage size:", err);
     }
   };
 
@@ -812,6 +856,76 @@ export const Settings: React.FC = () => {
                 onChange={handleToggleFrames}
                 className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
               />
+            </div>
+          </div>
+
+          {/* Frame Storage (usage + budget + retention) Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-0.5">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Frame Storage
+                </span>
+                <span className="font-sans text-[12px] text-text-faint">
+                  HEVC segments + thumbnails on this Mac
+                </span>
+              </div>
+              <button
+                onClick={refreshFramesStorage}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer"
+              >
+                {formatBytes(framesStorageBytes)} used
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Storage budget</span>
+              <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+                {[
+                  { l: "512 MB", v: 512 },
+                  { l: "2 GB", v: 2048 },
+                  { l: "5 GB", v: 5120 },
+                  { l: "10 GB", v: 10240 },
+                ].map((opt) => {
+                  const active = framesMaxStorageMb === opt.v;
+                  return (
+                    <button
+                      key={opt.v}
+                      onClick={() => handleFramesStorageChange(opt.v)}
+                      className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                        active
+                          ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                          : "text-text-muted hover:text-text-primary"
+                      }`}
+                    >
+                      {opt.l}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Keep frames for</span>
+              <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+                {[7, 30, 90, 365].map((d) => {
+                  const active = framesRetentionDays === d;
+                  const label = d === 365 ? "1 Year" : `${d} Days`;
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => handleFramesRetentionChange(d)}
+                      className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                        active
+                          ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                          : "text-text-muted hover:text-text-primary"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

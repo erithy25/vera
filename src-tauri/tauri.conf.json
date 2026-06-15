@@ -35,7 +35,8 @@
     ],
     "resources": [
       "binaries/ocr-helper",
-      "binaries/frame-capture"
+      "binaries/frame-capture",
+      "binaries/frame-extract"
     ],
     "macOS": {
       "dmg": {

@@ -591,6 +591,42 @@ export const settingsRepo = {
     );
   },
 
+  async getFramesMaxStorageMb(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'frames_max_storage_mb'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return 2048; // 2 GB default
+  },
+
+  async setFramesMaxStorageMb(mb: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_max_storage_mb', $1)",
+      [String(Math.max(1, Math.floor(mb)))]
+    );
+  },
+
+  async getFramesRetentionDays(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'frames_retention_days'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return 30;
+  },
+
+  async setFramesRetentionDays(days: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_retention_days', $1)",
+      [String(Math.max(1, Math.floor(days)))]
+    );
+  },
+
   async getExcludedApps(): Promise<string[]> {
     const db = await getDb();
     const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'excluded_apps'");
@@ -918,6 +954,8 @@ export async function initializeDefaultSettings() {
 
   await checkAndSeed("capture_paused", "false"); // active/not-paused by default for new installs
   await checkAndSeed("frames_capture_enabled", "false"); // frame-based screen recording OFF by default
+  await checkAndSeed("frames_max_storage_mb", "2048"); // 2 GB budget for HEVC segments + thumbnails
+  await checkAndSeed("frames_retention_days", "30"); // evict frame data older than this
   await checkAndSeed("excluded_apps", JSON.stringify(defaultApps));
   await checkAndSeed("excluded_domains", "[]");
   await checkAndSeed("redaction_enabled", "true");

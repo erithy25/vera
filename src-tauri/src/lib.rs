@@ -521,45 +521,246 @@ fn frames_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Open vera.db for frame writes, ensuring the table exists regardless of when
+/// Ensure the full frames + segments schema on a connection. Idempotent:
+/// creates the base tables and adds the segment columns only if missing, so it
+/// never collides with the sql-plugin migration. Logs, never panics.
+fn ensure_frames_schema(conn: &rusqlite::Connection) {
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS frames (\
+           id INTEGER PRIMARY KEY AUTOINCREMENT, \
+           timestamp INTEGER NOT NULL, app TEXT, window_title TEXT, url TEXT, \
+           ocr_text TEXT, image_path TEXT, perceptual_hash TEXT)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS segments (\
+           id TEXT PRIMARY KEY, path TEXT NOT NULL, started_at INTEGER NOT NULL, \
+           ended_at INTEGER, frame_count INTEGER NOT NULL DEFAULT 0, \
+           size_bytes INTEGER NOT NULL DEFAULT 0)",
+        [],
+    );
+    // Add the PROMPT-2 columns if an older frames table predates them.
+    let existing: std::collections::HashSet<String> = conn
+        .prepare("PRAGMA table_info(frames)")
+        .and_then(|mut stmt| {
+            let cols = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect::<std::collections::HashSet<String>>();
+            Ok(cols)
+        })
+        .unwrap_or_default();
+    for (col, decl) in [
+        ("segment_id", "TEXT"),
+        ("frame_index", "INTEGER"),
+        ("thumbnail_path", "TEXT"),
+    ] {
+        if !existing.contains(col) {
+            let _ = conn.execute(&format!("ALTER TABLE frames ADD COLUMN {} {}", col, decl), []);
+        }
+    }
+}
+
+/// Open vera.db for frame writes, ensuring the schema exists regardless of when
 /// the sql-plugin migration ran.
 fn open_frames_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let conn = open_vera_db(app)?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS frames (\
-           id INTEGER PRIMARY KEY AUTOINCREMENT, \
-           timestamp INTEGER NOT NULL, \
-           app TEXT, \
-           window_title TEXT, \
-           url TEXT, \
-           ocr_text TEXT, \
-           image_path TEXT NOT NULL, \
-           perceptual_hash TEXT)",
-        [],
-    )
-    .map_err(|e| format!("ensure frames table: {}", e))?;
+    ensure_frames_schema(&conn);
     Ok(conn)
 }
 
-/// Create the `frames` table directly against an existing vera.db at startup,
-/// so it exists even before the frontend loads the database (which is what
-/// triggers the sql-plugin migration). Idempotent; logs instead of panicking.
+/// Ensure the frames + segments schema directly against an existing vera.db at
+/// startup, before the frontend loads the database. Idempotent; logs, no panic.
 fn ensure_frames_table_at(path: &Path) {
     match rusqlite::Connection::open(path) {
         Ok(conn) => {
             let _ = conn.busy_timeout(Duration::from_millis(5000));
-            match conn.execute(
-                "CREATE TABLE IF NOT EXISTS frames (\
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, \
-                   timestamp INTEGER NOT NULL, app TEXT, window_title TEXT, url TEXT, \
-                   ocr_text TEXT, image_path TEXT NOT NULL, perceptual_hash TEXT)",
-                [],
-            ) {
-                Ok(_) => println!("[Vera Frames] frames table ready ({})", path.display()),
-                Err(e) => println!("[Vera Frames] could not ensure frames table: {}", e),
+            ensure_frames_schema(&conn);
+            println!("[Vera Frames] frames + segments schema ready ({})", path.display());
+        }
+        Err(e) => println!("[Vera Frames] could not open db to ensure schema: {}", e),
+    }
+}
+
+/// Recursively sum file sizes under a directory (segments + thumbnails).
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => total += dir_size(&entry.path()),
+                Ok(meta) => total += meta.len(),
+                Err(_) => {}
             }
         }
-        Err(e) => println!("[Vera Frames] could not open db to ensure frames table: {}", e),
+    }
+    total
+}
+
+/// Total on-disk bytes used by frame capture (HEVC segments + thumbnails).
+#[tauri::command]
+fn get_frames_storage_bytes(app: tauri::AppHandle) -> u64 {
+    match frames_dir(&app) {
+        Ok(dir) => dir_size(&dir),
+        Err(_) => 0,
+    }
+}
+
+/// SIGTERM the sidecar so it finalizes the open HEVC segment, then force-kill
+/// if it does not exit within a few seconds.
+fn stop_frame_child(mut child: std::process::Child) {
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    for _ in 0..30 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Remove leftover PROMPT-1 standalone full-frame PNGs (loose *.png in the
+/// frames root; segments live in frames/segments, thumbnails in frames/thumbs),
+/// and drop the orphaned PROMPT-1 rows that referenced them.
+fn cleanup_legacy_frame_files(app: &tauri::AppHandle) {
+    if let Ok(root) = frames_dir(app) {
+        let mut removed = 0u32;
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("png") {
+                    if std::fs::remove_file(&p).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        if removed > 0 {
+            println!("[Vera Frames] removed {} legacy standalone frame PNG(s)", removed);
+        }
+    }
+    if let Ok(conn) = open_frames_db(app) {
+        let _ = conn.execute("DELETE FROM frames WHERE segment_id IS NULL", []);
+    }
+}
+
+/// Enforce the storage budget + retention age by evicting the oldest CLOSED
+/// segments (the active, still-open segment is never touched), deleting their
+/// .mov, thumbnails, and rows. Never panics.
+fn evict_if_needed(app: &tauri::AppHandle) {
+    let budget_mb = read_setting_from_app(app, "frames_max_storage_mb")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(2048);
+    let retention_days = read_setting_from_app(app, "frames_retention_days")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30);
+    let budget_bytes = budget_mb.saturating_mul(1024 * 1024);
+    let cutoff = now_epoch_ms() as i64 - retention_days.saturating_mul(86_400_000);
+
+    let root = match frames_dir(app) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let conn = match open_frames_db(app) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    loop {
+        let total = dir_size(&root);
+        let oldest: Option<(String, String, i64)> = conn
+            .query_row(
+                "SELECT id, path, started_at FROM segments \
+                 WHERE ended_at IS NOT NULL ORDER BY started_at ASC LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+        let (id, path, started_at) = match oldest {
+            Some(t) => t,
+            None => break,
+        };
+        let over_budget = total > budget_bytes;
+        let too_old = started_at < cutoff;
+        if !over_budget && !too_old {
+            break;
+        }
+        // Delete this segment's thumbnails, its frame rows, the .mov, the row.
+        if let Ok(mut stmt) = conn.prepare("SELECT thumbnail_path FROM frames WHERE segment_id = ?1") {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![id], |r| r.get::<_, Option<String>>(0)) {
+                for tp in rows.flatten().flatten() {
+                    let _ = std::fs::remove_file(&tp);
+                }
+            }
+        }
+        let _ = conn.execute("DELETE FROM frames WHERE segment_id = ?1", rusqlite::params![id]);
+        let _ = std::fs::remove_file(&path);
+        let _ = conn.execute("DELETE FROM segments WHERE id = ?1", rusqlite::params![id]);
+        println!(
+            "[Vera Frames] evicted segment {} (over_budget={}, too_old={})",
+            id, over_budget, too_old
+        );
+    }
+}
+
+/// Retrieve the frame nearest a timestamp by seeking into its HEVC segment.
+/// Returns a temp JPEG path the caller can open/display.
+#[tauri::command]
+async fn extract_frame_near(app: tauri::AppHandle, timestamp: i64) -> Result<String, String> {
+    let (segment_id, frame_index, seg_path) = {
+        let conn = open_frames_db(&app)?;
+        let row: Option<(Option<String>, Option<i64>)> = conn
+            .query_row(
+                "SELECT segment_id, frame_index FROM frames \
+                 WHERE segment_id IS NOT NULL AND frame_index IS NOT NULL \
+                 ORDER BY ABS(timestamp - ?1) ASC LIMIT 1",
+                rusqlite::params![timestamp],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("query nearest frame: {}", e))?;
+        let (segment_id, frame_index) = row.ok_or_else(|| "no segment-backed frames yet".to_string())?;
+        let segment_id = segment_id.ok_or_else(|| "nearest frame has no segment".to_string())?;
+        let frame_index = frame_index.ok_or_else(|| "nearest frame has no index".to_string())?;
+        let seg_path: String = conn
+            .query_row(
+                "SELECT path FROM segments WHERE id = ?1",
+                rusqlite::params![segment_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("segment not found: {}", e))?;
+        (segment_id, frame_index, seg_path)
+    };
+
+    let helper = app
+        .path()
+        .resolve("binaries/frame-extract", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("frame-extract helper not found: {}", e))?;
+    let out = std::env::temp_dir().join(format!("vera-frame-{}.jpg", now_epoch_ms()));
+    let output = std::process::Command::new(&helper)
+        .arg(&seg_path)
+        .arg(frame_index.to_string())
+        .arg(&out)
+        .arg("1")
+        .output()
+        .map_err(|e| format!("run frame-extract: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).unwrap_or(serde_json::Value::Null);
+    if parsed.get("status").and_then(|s| s.as_str()) == Some("ok") {
+        let _ = segment_id; // (kept for clarity/logging parity)
+        Ok(out.to_string_lossy().to_string())
+    } else {
+        let err = parsed
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+        Err(format!("frame-extract failed: {}", err))
     }
 }
 
@@ -573,23 +774,26 @@ fn persist_frames_enabled(app: &tauri::AppHandle, enabled: bool) {
     }
 }
 
-/// Insert one kept frame, enriching with the active browser URL (browsers only)
-/// via the existing Automation path. An excluded frontmost app is dropped here
-/// too (belt-and-suspenders with the sidecar's own gate).
+/// Insert one kept frame (segment-backed: references segment_id + frame_index +
+/// thumbnail), enriching with the active browser URL (browsers only) via the
+/// existing Automation path. An excluded frontmost app is dropped here too
+/// (belt-and-suspenders with the sidecar's own gate).
 fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), String> {
     let app_name = v.get("app").and_then(|x| x.as_str()).unwrap_or("");
     let bundle_id = v.get("bundle_id").and_then(|x| x.as_str()).unwrap_or("");
     let window_title = v.get("window_title").and_then(|x| x.as_str());
     let ocr_text = v.get("ocr_text").and_then(|x| x.as_str()).unwrap_or("");
-    let image_path = v.get("image_path").and_then(|x| x.as_str()).unwrap_or("");
+    let thumbnail_path = v.get("thumbnail_path").and_then(|x| x.as_str()).unwrap_or("");
+    let segment_id = v.get("segment_id").and_then(|x| x.as_str());
+    let frame_index = v.get("frame_index").and_then(|x| x.as_i64());
     let phash = v.get("perceptual_hash").and_then(|x| x.as_str());
     let timestamp = v
         .get("timestamp")
         .and_then(|x| x.as_i64())
         .unwrap_or_else(|| now_epoch_ms() as i64);
 
-    if image_path.is_empty() {
-        return Err("frame missing image_path".to_string());
+    if thumbnail_path.is_empty() {
+        return Err("frame missing thumbnail_path".to_string());
     }
 
     // Defensive exclude re-check against the current settings.
@@ -600,6 +804,8 @@ fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), St
         .map(|s| s.excluded_apps.clone())
         .unwrap_or_default();
     if is_sensitive_app_in_list(app_name, bundle_id, &excluded) {
+        // Drop the just-written thumbnail so nothing is stored for it.
+        let _ = std::fs::remove_file(thumbnail_path);
         return Ok(());
     }
 
@@ -611,12 +817,55 @@ fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), St
 
     let conn = open_frames_db(app)?;
     conn.execute(
-        "INSERT INTO frames (timestamp, app, window_title, url, ocr_text, image_path, perceptual_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![timestamp, app_name, window_title, url, ocr_text, image_path, phash],
+        "INSERT INTO frames \
+           (timestamp, app, window_title, url, ocr_text, image_path, perceptual_hash, segment_id, frame_index, thumbnail_path) \
+         VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9)",
+        rusqlite::params![timestamp, app_name, window_title, url, ocr_text, phash, segment_id, frame_index, thumbnail_path],
     )
     .map_err(|e| format!("insert frame: {}", e))?;
     let _ = app.emit("frame-stored", ());
+    Ok(())
+}
+
+/// Record a newly opened HEVC segment (ended_at NULL = still being written).
+fn persist_segment_opened(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), String> {
+    let id = v
+        .get("segment_id")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "segment_opened missing id".to_string())?;
+    let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("");
+    let started_at = v
+        .get("started_at")
+        .and_then(|x| x.as_i64())
+        .unwrap_or_else(|| now_epoch_ms() as i64);
+    let conn = open_frames_db(app)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO segments (id, path, started_at, ended_at, frame_count, size_bytes) \
+         VALUES (?1, ?2, ?3, NULL, 0, 0)",
+        rusqlite::params![id, path, started_at],
+    )
+    .map_err(|e| format!("insert segment: {}", e))?;
+    Ok(())
+}
+
+/// Finalize a segment row once the sidecar has written + closed the .mov.
+fn persist_segment_closed(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), String> {
+    let id = v
+        .get("segment_id")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "segment_closed missing id".to_string())?;
+    let frame_count = v.get("frame_count").and_then(|x| x.as_i64()).unwrap_or(0);
+    let size_bytes = v.get("size_bytes").and_then(|x| x.as_i64()).unwrap_or(0);
+    let ended_at = v
+        .get("ended_at")
+        .and_then(|x| x.as_i64())
+        .unwrap_or_else(|| now_epoch_ms() as i64);
+    let conn = open_frames_db(app)?;
+    conn.execute(
+        "UPDATE segments SET ended_at = ?1, frame_count = ?2, size_bytes = ?3 WHERE id = ?4",
+        rusqlite::params![ended_at, frame_count, size_bytes, id],
+    )
+    .map_err(|e| format!("update segment: {}", e))?;
     Ok(())
 }
 
@@ -638,6 +887,18 @@ fn handle_sidecar_line(app: &tauri::AppHandle, line: &str) {
             if let Err(e) = persist_frame(app, &v) {
                 eprintln!("[Vera Frames] persist failed: {}", e);
             }
+        }
+        Some("segment_opened") => {
+            if let Err(e) = persist_segment_opened(app, &v) {
+                eprintln!("[Vera Frames] segment_opened persist failed: {}", e);
+            }
+        }
+        Some("segment_closed") => {
+            if let Err(e) = persist_segment_closed(app, &v) {
+                eprintln!("[Vera Frames] segment_closed persist failed: {}", e);
+            }
+            // A segment just finalized — a good moment to enforce the budget.
+            evict_if_needed(app);
         }
         Some("status") => {
             let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
@@ -674,7 +935,9 @@ fn spawn_frame_sidecar(app: &tauri::AppHandle, helper: &Path) -> Result<std::pro
         .arg("--fps").arg("1")
         .arg("--max-width").arg("1280")
         .arg("--hash-threshold").arg("5")
-        .arg("--vera-bundle-id").arg("app.vera.desktop");
+        .arg("--vera-bundle-id").arg("app.vera.desktop")
+        .arg("--segment-seconds").arg("600")
+        .arg("--thumb-width").arg("320");
     if !exclude_arg.is_empty() {
         cmd.arg("--exclude").arg(exclude_arg);
     }
@@ -721,10 +984,21 @@ fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
             return;
         }
     };
+    // One-time cleanup of PROMPT-1 standalone frame PNGs + orphan rows.
+    cleanup_legacy_frame_files(&app);
+
     let mut warned_permission = false;
+    let mut ticks: u32 = 0;
 
     loop {
         std::thread::sleep(Duration::from_secs(2));
+        ticks = ticks.wrapping_add(1);
+
+        // Enforce storage budget / retention roughly once a minute, independent
+        // of segment-close events (covers age-based eviction while idle).
+        if ticks % 30 == 0 {
+            evict_if_needed(&app);
+        }
 
         let want = {
             let enabled = app
@@ -779,9 +1053,8 @@ fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
             }
         } else if !want && running {
             if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
-                if let Some(mut child) = g.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                if let Some(child) = g.take() {
+                    stop_frame_child(child); // SIGTERM → finalize segment → exit
                     println!("[Vera Frames] capture stopped");
                 }
             }
@@ -838,9 +1111,8 @@ fn update_privacy_settings(
     // (its capture-time SCContentFilter + frontmost gate are set at spawn). The
     // supervisor respawns it within ~2s with the new exclusions.
     if let Ok(mut g) = app.state::<FrameCaptureState>().child.lock() {
-        if let Some(mut child) = g.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(child) = g.take() {
+            stop_frame_child(child); // SIGTERM → finalize segment → exit
         }
     }
     apply_pause(&app, paused);
@@ -1568,7 +1840,9 @@ pub fn run() {
       test_cloud_connection,
       generate_chat_completion,
       set_frames_capture_enabled,
-      is_frames_capture_enabled
+      is_frames_capture_enabled,
+      get_frames_storage_bytes,
+      extract_frame_near
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
