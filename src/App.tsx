@@ -144,6 +144,13 @@ function App() {
           })
         );
         unlisteners.push(
+          await listen("frame-stored", () => {
+            // New visual-memory frame stored — refresh views and index it for search.
+            window.dispatchEvent(new CustomEvent("captures-updated"));
+            runEmbeddingBackfill();
+          })
+        );
+        unlisteners.push(
           await listen<any>("screen-capture", (event) => {
             if (event.payload?.status === "PermissionRequired") {
               window.dispatchEvent(new CustomEvent("capture-permission-missing"));

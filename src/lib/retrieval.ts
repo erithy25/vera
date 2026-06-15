@@ -88,5 +88,14 @@ export async function retrieveRelevantFrames(
     hits = kw.map((f) => ({ frame: f, score: 0 }));
   }
 
+  // Last resort: if nothing matched by meaning or keyword, surface the most
+  // recent frames (within the time window if one was given) so a broad question
+  // like "what did you see?" still grounds in real screen activity instead of
+  // claiming there is nothing.
+  if (hits.length === 0) {
+    const recent = await framesRepo.search(undefined, timeRange?.startMs, timeRange?.endMs, topN);
+    hits = recent.map((f) => ({ frame: f, score: 0 }));
+  }
+
   return { hits, timeRange };
 }
