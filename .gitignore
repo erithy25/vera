@@ -39,3 +39,6 @@ src-tauri/target
 
 # macOS signing credentials — never commit these
 .env.signing
+
+# Machine-specific cargo target-dir override (do not commit)
+src-tauri/.cargo/config.toml
