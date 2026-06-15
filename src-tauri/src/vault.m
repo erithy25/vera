@@ -1,15 +1,19 @@
 // Vera media-key vault.
 //
 // Manages a 32-byte AES-256 master key for encrypting screen-recording media
-// (HEVC segments + thumbnails). The key lives ONLY in the macOS Keychain,
-// protected by a biometric (Touch ID) access control and hardware-backed by the
-// Secure Enclave on Apple Silicon. It is never written to disk in plaintext and
-// never embedded in the bundle. It is handed to the Rust process (in memory)
-// only after a successful Touch ID unlock, and only for the current session.
+// (HEVC segments + thumbnails). The key lives ONLY in the macOS Keychain and is
+// handed to the Rust process (in memory) only for the current session.
+//
+// Robustness: it PREFERS a Touch-ID-gated item in the modern data-protection
+// keychain (Secure Enclave). If that cannot be created on this Mac (biometry
+// unavailable, keychain/entitlement quirks, etc.) it falls back to a plain item
+// in the classic keychain — still encrypted at rest by macOS, just without the
+// biometric gate — so recording can always be enabled. Never written to disk in
+// plaintext and never embedded in the bundle.
 //
 // C ABI consumed by Rust:
 //   int  vault_has_key(void);                 // 1 if a key exists, 0 otherwise (no prompt)
-//   int  vault_get_or_create(uint8_t *out32); // Touch ID; fills 32 bytes; 0 = ok, <0 = error
+//   int  vault_get_or_create(uint8_t *out32); // fills 32 bytes; 0 = ok, <0 = error
 //   int  vault_delete_key(void);              // remove the key (full reset)
 
 #import <Foundation/Foundation.h>
@@ -19,79 +23,97 @@ static NSString *const kVaultService = @"app.vera.desktop.vault";
 static NSString *const kVaultAccount = @"media-master-key";
 static const size_t kVaultKeyLen = 32;
 
-// Does a key exist? Uses kSecUseAuthenticationUISkip so it never triggers Touch ID.
-int vault_has_key(void) {
-    NSDictionary *query = @{
+// Base identity. dataProtection=YES routes to the modern keychain (required for
+// biometry access control); NO uses the classic file keychain (the most
+// reliable fallback, needs no special entitlement).
+static NSMutableDictionary *vault_query(BOOL dataProtection) {
+    NSMutableDictionary *q = [@{
         (id)kSecClass: (id)kSecClassGenericPassword,
         (id)kSecAttrService: kVaultService,
         (id)kSecAttrAccount: kVaultAccount,
-        (id)kSecUseAuthenticationUI: (id)kSecUseAuthenticationUISkip,
-    };
-    OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL);
-    // errSecInteractionNotAllowed means the item exists but needs biometric auth.
-    return (st == errSecSuccess || st == errSecInteractionNotAllowed) ? 1 : 0;
+    } mutableCopy];
+    if (dataProtection) {
+        q[(id)kSecUseDataProtectionKeychain] = @YES;
+    }
+    return q;
 }
 
-// Fetch the key, triggering the system Touch ID prompt. 0 on success.
-static int vault_fetch(uint8_t *out) {
-    NSDictionary *query = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: kVaultService,
-        (id)kSecAttrAccount: kVaultAccount,
-        (id)kSecReturnData: @YES,
-        (id)kSecUseOperationPrompt: @"Unlock Vera's screen recordings",
-    };
-    CFTypeRef result = NULL;
-    OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (st != errSecSuccess || result == NULL) {
-        return -1;
+int vault_has_key(void) {
+    // Check both keychains; either may hold the key.
+    BOOL dps[2] = {YES, NO};
+    for (int i = 0; i < 2; i++) {
+        NSMutableDictionary *q = vault_query(dps[i]);
+        q[(id)kSecUseAuthenticationUI] = (id)kSecUseAuthenticationUISkip;
+        OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)q, NULL);
+        if (st == errSecSuccess || st == errSecInteractionNotAllowed) {
+            return 1;
+        }
     }
-    NSData *data = (__bridge_transfer NSData *)result;
-    if (data.length != kVaultKeyLen) {
-        return -2;
-    }
-    memcpy(out, data.bytes, kVaultKeyLen);
     return 0;
 }
 
-// Generate a fresh random key and store it with a biometry access control.
+static int vault_fetch(uint8_t *out) {
+    BOOL dps[2] = {YES, NO};
+    for (int i = 0; i < 2; i++) {
+        NSMutableDictionary *q = vault_query(dps[i]);
+        q[(id)kSecReturnData] = @YES;
+        q[(id)kSecUseOperationPrompt] = @"Unlock Vera's screen recordings";
+        CFTypeRef result = NULL;
+        OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+        if (st == errSecSuccess && result != NULL) {
+            NSData *data = (__bridge_transfer NSData *)result;
+            if (data.length == kVaultKeyLen) {
+                memcpy(out, data.bytes, kVaultKeyLen);
+                return 0;
+            }
+            return -2;
+        }
+        if (result) CFRelease(result);
+    }
+    return -1;
+}
+
+// Preferred: Touch-ID-gated item in the data-protection keychain.
+static OSStatus vault_store_biometry(uint8_t *key) {
+    CFErrorRef acErr = NULL;
+    SecAccessControlRef access = SecAccessControlCreateWithFlags(
+        kCFAllocatorDefault,
+        kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        kSecAccessControlBiometryCurrentSet,
+        &acErr);
+    if (acErr) CFRelease(acErr);
+    if (access == NULL) {
+        return errSecParam;
+    }
+    NSMutableDictionary *attrs = vault_query(YES);
+    attrs[(id)kSecValueData] = [NSData dataWithBytes:key length:kVaultKeyLen];
+    attrs[(id)kSecAttrAccessControl] = (__bridge id)access;
+    SecItemDelete((__bridge CFDictionaryRef)vault_query(YES));
+    OSStatus st = SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+    CFRelease(access);
+    return st;
+}
+
+// Fallback: plain generic password in the classic keychain (always works for a
+// signed app; encrypted at rest by the login keychain, no biometric gate).
+static OSStatus vault_store_plain(uint8_t *key) {
+    NSMutableDictionary *attrs = vault_query(NO);
+    attrs[(id)kSecValueData] = [NSData dataWithBytes:key length:kVaultKeyLen];
+    SecItemDelete((__bridge CFDictionaryRef)vault_query(NO));
+    return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}
+
 static int vault_create(uint8_t *out) {
     uint8_t key[kVaultKeyLen];
     if (SecRandomCopyBytes(kSecRandomDefault, kVaultKeyLen, key) != errSecSuccess) {
         return -10;
     }
 
-    CFErrorRef acErr = NULL;
-    SecAccessControlRef access = SecAccessControlCreateWithFlags(
-        kCFAllocatorDefault,
-        kSecAttrAccessibleWhenUnlockedThisDeviceOnly, // never syncs to iCloud
-        kSecAccessControlBiometryCurrentSet,          // Touch ID; invalidated if biometrics change
-        &acErr);
-    if (access == NULL) {
-        if (acErr) CFRelease(acErr);
-        memset(key, 0, kVaultKeyLen);
-        return -11;
+    OSStatus st = vault_store_biometry(key);
+    if (st != errSecSuccess) {
+        st = vault_store_plain(key);
     }
 
-    NSData *keyData = [NSData dataWithBytes:key length:kVaultKeyLen];
-    NSDictionary *attrs = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: kVaultService,
-        (id)kSecAttrAccount: kVaultAccount,
-        (id)kSecValueData: keyData,
-        (id)kSecAttrAccessControl: (__bridge id)access,
-    };
-
-    // Replace any prior item.
-    NSDictionary *del = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: kVaultService,
-        (id)kSecAttrAccount: kVaultAccount,
-    };
-    SecItemDelete((__bridge CFDictionaryRef)del);
-
-    OSStatus st = SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
-    CFRelease(access);
     if (st != errSecSuccess) {
         memset(key, 0, kVaultKeyLen);
         return -12;
@@ -101,7 +123,6 @@ static int vault_create(uint8_t *out) {
     return 0;
 }
 
-// Return the existing key (Touch ID) or create one on first use.
 int vault_get_or_create(uint8_t *out) {
     if (vault_has_key()) {
         return vault_fetch(out);
@@ -109,13 +130,10 @@ int vault_get_or_create(uint8_t *out) {
     return vault_create(out);
 }
 
-// Remove the key entirely (used by a full reset). 0 on success or not-found.
 int vault_delete_key(void) {
-    NSDictionary *del = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: kVaultService,
-        (id)kSecAttrAccount: kVaultAccount,
-    };
-    OSStatus st = SecItemDelete((__bridge CFDictionaryRef)del);
-    return (st == errSecSuccess || st == errSecItemNotFound) ? 0 : -1;
+    OSStatus s1 = SecItemDelete((__bridge CFDictionaryRef)vault_query(YES));
+    OSStatus s2 = SecItemDelete((__bridge CFDictionaryRef)vault_query(NO));
+    BOOL ok = (s1 == errSecSuccess || s1 == errSecItemNotFound) &&
+              (s2 == errSecSuccess || s2 == errSecItemNotFound);
+    return ok ? 0 : -1;
 }

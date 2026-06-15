@@ -352,11 +352,12 @@ export const Settings: React.FC = () => {
 
   const handleVaultUnlock = async () => {
     try {
-      await invoke("vault_unlock"); // Touch ID
+      await invoke("vault_unlock"); // Touch ID (or transparent fallback key)
       setVaultUnlocked(true);
       return true;
     } catch (err) {
       console.error("Vault unlock failed:", err);
+      window.alert("Aufnahme konnte nicht aktiviert werden (Schlüssel-Tresor): " + errorToMessage(err));
       return false;
     }
   };
