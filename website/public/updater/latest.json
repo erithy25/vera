@@ -1,0 +1,11 @@
+{
+  "version": "0.5.0",
+  "notes": "A new version of Vera is available.",
+  "pub_date": "2026-06-15T20:19:53.295Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUajFXTTJMeFZkMTh4d2o5YWRZMlZZMHh2bktuay9vWUt1elRtZGl0QnE3OFNVZlB6ZTAvS3R0eWJTNFBqRDhSTmhsS2tFcStwcjJGMTZkK0RtWU1MRHhFdWZjT2dGcVE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNTU0Nzg3CWZpbGU6VmVyYS5hcHAudGFyLmd6CmRnaTZNUk5rUmIvN0hKRFVGZWhLcHQvVklPaGI5MUxUS3dFbitLdm5KckhDL3RLcndVVXlSK01adzN1NG1CUXFBdmo5RCtQY3RkYkUrSVVQK0kvREJnPT0K",
+      "url": "https://deine-echte-vercel-url.vercel.app/downloads/Vera.app.tar.gz"
+    }
+  }
+}
