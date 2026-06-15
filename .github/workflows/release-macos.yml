@@ -1,0 +1,87 @@
+name: Release Vera (signed + published)
+
+# Manually triggered. Builds the app on a real Mac, signs it with the user's
+# Developer ID + notarizes it (via repo secrets), copies the signed DMG into the
+# website, and pushes so Vercel redeploys the new download. After the one-time
+# secret setup, publishing is just: Actions -> this workflow -> "Run workflow".
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: claude/cool-albattani-ojjoby
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Import Developer ID certificate into a temp keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/vera-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KC"
+          security list-keychains -d user -s "$KC"
+          echo "Signing identities available:"
+          security find-identity -v -p codesigning "$KC"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build, sign + notarize
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri build
+
+      - name: Copy signed DMG into the website
+        run: |
+          set -euo pipefail
+          dmg="$(find src-tauri/target -name 'Vera_*.dmg' -path '*bundle/dmg/*' | head -1)"
+          echo "Found DMG: $dmg"
+          test -n "$dmg"
+          mkdir -p website/public/downloads
+          cp "$dmg" website/public/downloads/Vera.dmg
+
+      - name: Upload signed DMG as an artifact too
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vera-signed-dmg
+          path: website/public/downloads/Vera.dmg
+          if-no-files-found: warn
+
+      - name: Commit + push to publish (Vercel auto-deploys)
+        run: |
+          set -euo pipefail
+          git config user.name "vera-release-bot"
+          git config user.email "release@users.noreply.github.com"
+          git add website/public/downloads/Vera.dmg
+          if git diff --staged --quiet; then
+            echo "No change in DMG; nothing to publish."
+          else
+            VERSION="$(node -e 'console.log(require("./src-tauri/tauri.conf.json").version)')"
+            git commit -m "Publish signed Vera $VERSION to website [skip ci]"
+            git push origin claude/cool-albattani-ojjoby
+          fi
