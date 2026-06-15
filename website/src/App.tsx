@@ -325,7 +325,7 @@ export function App() {
           </div>
         </div>
         <div className="max-w-[1120px] mx-auto px-6 sm:px-10 pb-10">
-          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Local AI for macOS</span>
+          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Local AI for macOS · v0.5.0</span>
         </div>
       </footer>
     </div>
