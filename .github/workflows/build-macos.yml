@@ -1,15 +1,11 @@
 name: Build Vera (macOS)
 
-# Builds the full app (frontend + Rust + Swift/ObjC sidecars) on a real Apple
-# Silicon Mac runner, UNSIGNED, so we can confirm the native stack compiles and
-# get a downloadable DMG artifact without needing a local Mac. Signing /
-# notarization is intentionally skipped here (that stays a local release step).
+# Manual-only build verification on a real Apple Silicon Mac (unsigned). Run it
+# from the Actions tab when you want to confirm the native stack still compiles.
+# It does NOT run automatically on push, so normal pushes cost nothing.
 
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - claude/cool-albattani-ojjoby
 
 jobs:
   build:
