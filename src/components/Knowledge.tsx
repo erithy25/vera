@@ -1,9 +1,24 @@
 import React, { useState, useEffect } from "react";
 import { Search, Eye, AlertTriangle, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
-import { capturesRepo, DbCapture, settingsRepo } from "../lib/db";
+import { framesRepo, DbCapture, DbFrame, settingsRepo } from "../lib/db";
 import { ollamaClient, cosineSimilarity } from "../lib/ollama";
 
 const PAGE_SIZE = 80;
+
+// The Knowledge browser now reads the encrypted visual memory (frames). Map a
+// frame to the row shape this view already renders (text + app + time).
+function frameToCapture(f: DbFrame): DbCapture {
+  const text = f.ocr_text || "";
+  return {
+    id: f.id,
+    captured_at: f.timestamp,
+    app_name: f.app || "Screen",
+    window_title: f.window_title,
+    ocr_text: text,
+    char_count: text.length,
+    embedding: f.embedding,
+  };
+}
 
 function dayLabel(timeMs: number): string {
   const today = new Date();
@@ -45,7 +60,7 @@ export const Knowledge: React.FC = () => {
         try {
           setSearchMode("semantic");
           const queryVector = await ollamaClient.generateEmbedding(searchQuery, embeddingModel);
-          const allCaptures = await capturesRepo.list(); // Retrieve all captures for JS-side ranking
+          const allCaptures = (await framesRepo.search()).map(frameToCapture); // visual memory, JS-side ranking
 
           const ranked = allCaptures
             .map((c) => {
@@ -71,7 +86,7 @@ export const Knowledge: React.FC = () => {
       }
 
       setSearchMode("keyword");
-      const list = await capturesRepo.list(searchQuery);
+      const list = (await framesRepo.search(searchQuery)).map(frameToCapture);
       setCaptures(list);
     } catch (err) {
       console.error("Failed to fetch captures:", err);
@@ -109,7 +124,7 @@ export const Knowledge: React.FC = () => {
 
   const handleDelete = async (id: number) => {
     try {
-      await capturesRepo.remove(id);
+      await framesRepo.removeRow(id);
       setCaptures((prev) => prev.filter((c) => c.id !== id));
     } catch (err) {
       console.error("Failed to delete capture:", err);

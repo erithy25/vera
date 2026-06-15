@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "lucide-react";
 import { activityRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
-import { retrieveRelevantCaptures, retrieveRelevantFrames } from "../lib/retrieval";
+import { retrieveRelevantFrames } from "../lib/retrieval";
 import { useUserProfile } from "../lib/useUserProfile";
 
 interface SourceReference {
@@ -25,7 +25,49 @@ interface HistoryEntry {
   reply: string;
   sources: SourceReference[];
   frameSources?: FrameSource[];
+  thinkingSteps?: string[];
+  visionReply?: string;
+  visionModel?: string;
+  visionBusy?: boolean;
 }
+
+// Collapsible panel showing the REAL retrieval pipeline steps for an answer.
+const ThinkingPanel: React.FC<{ steps: string[]; live: boolean }> = ({ steps, live }) => {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (live) setOpen(true);
+  }, [live]);
+  if (!steps || steps.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="self-start flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-wider font-semibold text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+      >
+        {live ? (
+          <span className="flex gap-1 items-center">
+            <span className="w-1 h-1 rounded-full bg-text-muted animate-pulse" />
+            Thinking
+          </span>
+        ) : (
+          <span>Thought process</span>
+        )}
+        <span className="text-text-faint normal-case tracking-normal">
+          {open ? "▾" : "▸"} {steps.length}
+        </span>
+      </button>
+      {open && (
+        <ol className="flex flex-col gap-1 pl-3 border-l border-border-hairline">
+          {steps.map((s, i) => (
+            <li key={i} className="font-sans text-[11px] text-text-muted leading-snug">
+              {s}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+};
 
 // A cited frame from the visual memory: decrypts its thumbnail on demand (so the
 // store stays encrypted), shows the redaction-baked image, click to enlarge and
@@ -222,6 +264,72 @@ export const CommandBar: React.FC = () => {
     inputRef.current?.focus();
   };
 
+  // Append a live thinking step to an in-flight answer (reflects real progress).
+  const addStep = (id: string, step: string) => {
+    setHistory((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, thinkingSteps: [...(it.thinkingSteps || []), step] } : it))
+    );
+  };
+
+  // Optional, explicit vision pass: run a local vision model on the top few
+  // cited frames only. Off the normal hot path; clear fallback when unavailable.
+  const runVisionPass = async (entry: HistoryEntry) => {
+    if (!entry.frameSources || entry.frameSources.length === 0) return;
+    setHistory((prev) => prev.map((it) => (it.id === entry.id ? { ...it, visionBusy: true } : it)));
+    try {
+      const installed = await ollamaClient.listModels();
+      const visionModels = ollamaClient.visionModels(installed);
+      if (visionModels.length === 0) {
+        setHistory((prev) =>
+          prev.map((it) =>
+            it.id === entry.id
+              ? {
+                  ...it,
+                  visionBusy: false,
+                  visionReply:
+                    "No local vision model is installed. Install one (e.g. `ollama pull llava`) to analyze the frames visually — this answer is based on the extracted text only.",
+                }
+              : it
+          )
+        );
+        return;
+      }
+      const model = visionModels[0];
+      // Decrypt only the top few candidate thumbnails.
+      const frames = entry.frameSources.slice(0, 3);
+      const images: string[] = [];
+      for (const f of frames) {
+        if (!f.thumbnail_path) continue;
+        try {
+          const dataUrl = await invoke<string>("get_frame_thumbnail", { thumbnailPath: f.thumbnail_path });
+          const b64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
+          if (b64) images.push(b64);
+        } catch (e) {
+          console.error("Vision decrypt failed:", e);
+        }
+      }
+      if (images.length === 0) {
+        setHistory((prev) =>
+          prev.map((it) =>
+            it.id === entry.id ? { ...it, visionBusy: false, visionReply: "Could not decrypt the frames for visual analysis." } : it
+          )
+        );
+        return;
+      }
+      const prompt = `These are screenshots from the user's own screen. Answer their question concisely based on what is visible: ${entry.query}`;
+      const reply = await ollamaClient.visionAnswer(model, prompt, images);
+      setHistory((prev) =>
+        prev.map((it) => (it.id === entry.id ? { ...it, visionBusy: false, visionReply: reply, visionModel: model } : it))
+      );
+    } catch (err: any) {
+      setHistory((prev) =>
+        prev.map((it) =>
+          it.id === entry.id ? { ...it, visionBusy: false, visionReply: `Visual analysis failed: ${err.message || err}` } : it
+        )
+      );
+    }
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const query = inputValue.trim();
@@ -308,6 +416,8 @@ export const CommandBar: React.FC = () => {
         return;
       }
 
+      addStep(queryId, "Searching your memory…");
+
       // Gather today's stats, top apps, timeline, goals, and notes
       const [stats, topApps, timeline, dailyGoal, notes] = await Promise.all([
         activityRepo.todayStats(),
@@ -317,24 +427,30 @@ export const CommandBar: React.FC = () => {
         notesRepo.list(),
       ]);
 
-      // Retrieve captures relevant to the query (semantic with LIKE fallback;
-      // shared with the Researcher agent, always on-device)
-      const relevantCaptures = await retrieveRelevantCaptures(query);
-      // Also search the encrypted visual memory (frames): keyword + semantic +
+      // Search the encrypted visual memory (frames): keyword + semantic + an
       // optional time filter. Only a handful of candidates; nothing decrypts here.
       const { hits: frameHits, timeRange } = await retrieveRelevantFrames(query);
 
-      // Update references / sources on entry (captures + cited frames)
+      if (frameHits.length > 0) {
+        const apps = Array.from(new Set(frameHits.map((h) => h.frame.app).filter(Boolean))) as string[];
+        const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        addStep(
+          queryId,
+          `Found ${frameHits.length} matching frame${frameHits.length > 1 ? "s" : ""}${
+            timeRange ? ` (${timeRange.label})` : ""
+          }${apps.length ? ` in ${apps.slice(0, 3).join(", ")}` : ""}, near ${topTime}`
+        );
+      } else {
+        addStep(queryId, `No matching frames${timeRange ? ` for ${timeRange.label}` : ""}; using your activity, notes & goals`);
+      }
+      addStep(queryId, "Reading the top matches and writing the answer…");
+
+      // Cite the frames (thumbnails shown under the answer).
       setHistory((prev) =>
         prev.map((item) =>
           item.id === queryId
             ? {
                 ...item,
-                sources: relevantCaptures.map((c) => ({
-                  app_name: c.app_name,
-                  window_title: c.window_title,
-                  captured_at: c.captured_at,
-                })),
                 frameSources: frameHits.map((h) => ({
                   app: h.frame.app,
                   window_title: h.frame.window_title,
@@ -364,23 +480,7 @@ ${dailyGoal ? `- Goal: ${dailyGoal.title} (${dailyGoal.target_minutes} minutes t
 
 --- NOTES ---
 ${notes.map((n) => `- Title: "${n.title}"\n  Body: "${n.body || ""}"`).join("\n")}
-
---- RELEVANT SCREEN CAPTURES ---
 `;
-
-      if (relevantCaptures.length > 0) {
-        relevantCaptures.forEach((c, idx) => {
-          const timeStr = new Date(c.captured_at).toLocaleTimeString();
-          contextText += `\n[Capture #${idx + 1}]
-Time: ${timeStr}
-App: ${c.app_name}
-Window Title: ${c.window_title || "Unknown"}
-Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 800)}"
-`;
-        });
-      } else {
-        contextText += "\nNo matching screen captures found in memory.";
-      }
 
       // Visual memory (frames) — the actual screen content, with timestamps the
       // answer can cite. The matching thumbnails are shown under the answer.
@@ -578,6 +678,13 @@ Rules:
                         Vera
                       </span>
 
+                      {item.thinkingSteps && item.thinkingSteps.length > 0 && (
+                        <ThinkingPanel
+                          steps={item.thinkingSteps}
+                          live={isLoading && idx === history.length - 1 && !item.reply}
+                        />
+                      )}
+
                       {item.reply ? (
                         <p className="font-serif text-[16px] text-text-muted italic leading-relaxed select-text whitespace-pre-wrap">
                           {item.reply}
@@ -628,6 +735,35 @@ Rules:
                               <FrameThumbnail key={i} frame={fs} />
                             ))}
                           </div>
+
+                          {/* Optional, explicit vision pass over the cited frames */}
+                          {item.reply && (
+                            <div className="mt-1 flex flex-col gap-2">
+                              {!item.visionReply && !item.visionBusy && (
+                                <button
+                                  onClick={() => runVisionPass(item)}
+                                  className="self-start font-sans text-[11px] px-2.5 py-1 rounded-full border border-border-hairline text-text-muted hover:text-text-primary hover:bg-active-hover transition-colors cursor-pointer"
+                                >
+                                  Look at the frames (vision)
+                                </button>
+                              )}
+                              {item.visionBusy && (
+                                <span className="font-sans text-[11px] text-text-faint italic">
+                                  Analyzing the frames visually…
+                                </span>
+                              )}
+                              {item.visionReply && (
+                                <div className="flex flex-col gap-1 p-3 rounded-xl bg-active-hover/50 border border-border-hairline">
+                                  <span className="font-sans text-[10px] text-text-faint uppercase tracking-wider font-semibold">
+                                    Visual analysis{item.visionModel ? ` · ${item.visionModel}` : ""}
+                                  </span>
+                                  <p className="font-sans text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap select-text">
+                                    {item.visionReply}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

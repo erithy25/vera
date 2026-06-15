@@ -569,6 +569,13 @@ export const framesRepo = {
     ]);
   },
 
+  // Remove a single frame row (its encrypted media is reclaimed by eviction /
+  // "Delete all recordings"; deleting one row does not touch the segment file).
+  async removeRow(id: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM frames WHERE id = $1", [id]);
+  },
+
   // All frames within [startMs, endMs), chronological — for the Timeline.
   async forDay(startMs: number, endMs: number): Promise<DbFrame[]> {
     const db = await getDb();

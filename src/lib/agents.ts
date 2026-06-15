@@ -1,5 +1,5 @@
 import { activityRepo, goalsRepo, notesRepo } from "./db";
-import { retrieveRelevantCaptures, retrieveRelevantFrames } from "./retrieval";
+import { retrieveRelevantFrames } from "./retrieval";
 
 // Shared visual-memory (frames) context + source chips for agents. Searches the
 // same encrypted index as the Ask bar; nothing decrypts here.
@@ -201,34 +201,9 @@ export async function buildAgentContext(
       return { context: capContext(`${base}\n\n${frameCtx}`), sources: frameSources };
     }
     case "researcher": {
-      // Same on-device semantic search as the Ask-bar, over captures + frames.
-      const captures = await retrieveRelevantCaptures(query);
-      let ctx = "--- RELEVANT SCREEN CAPTURES (the user's own data) ---\n";
-      if (captures.length > 0) {
-        captures.forEach((c, idx) => {
-          const timeStr = new Date(c.captured_at).toLocaleTimeString();
-          ctx += `\n[Capture #${idx + 1}]
-Time: ${timeStr}
-App: ${c.app_name}
-Window Title: ${c.window_title || "Unknown"}
-Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 700)}"
-`;
-        });
-      } else {
-        ctx += "\nNo matching screen captures found in memory.";
-      }
+      // Same on-device semantic search as the Ask-bar, over the visual memory.
       const { frameCtx, frameSources } = await buildFrameContext(query);
-      return {
-        context: capContext(`${ctx}\n\n${frameCtx}`),
-        sources: [
-          ...captures.map((c) => ({
-            app_name: c.app_name,
-            window_title: c.window_title,
-            captured_at: c.captured_at,
-          })),
-          ...frameSources,
-        ],
-      };
+      return { context: capContext(frameCtx), sources: frameSources };
     }
     case "writer":
     default:

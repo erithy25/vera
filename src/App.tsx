@@ -9,7 +9,7 @@ import { Goals } from "./components/Goals";
 import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
-import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, capturesRepo, framesRepo, getDb, settingsRepo } from "./lib/db";
+import { seedDatabaseIfEmpty, initializeDefaultSettings, framesRepo, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { ollamaClient } from "./lib/ollama";
@@ -29,47 +29,22 @@ async function backfillEmbeddings() {
       return;
     }
 
-    const db = await getDb();
-    const unencoded = await db.select<any[]>(
-      "SELECT id, ocr_text FROM captures WHERE (embedding IS NULL OR embedding = '') AND ocr_text != '' ORDER BY captured_at DESC LIMIT 100"
-    );
-
-    if (unencoded.length > 0) {
-      console.log(`[Vera AI] Backfilling embeddings for ${unencoded.length} captures...`);
-      for (const row of unencoded) {
+    // Backfill embeddings for the visual memory (frames) so they are searchable.
+    const framesToEmbed = await framesRepo.needingEmbeddings(100);
+    if (framesToEmbed.length > 0) {
+      console.log(`[Vera AI] Backfilling embeddings for ${framesToEmbed.length} frames...`);
+      for (const f of framesToEmbed) {
         try {
-          const text = row.ocr_text.trim();
+          const text = (f.ocr_text || "").trim();
           if (text) {
             const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-            await capturesRepo.updateEmbedding(row.id, vector);
+            await framesRepo.updateEmbedding(f.id, vector);
           }
         } catch (err) {
-          console.error(`[Vera AI] Failed to generate embedding for capture ${row.id}:`, err);
+          console.error(`[Vera AI] Failed to embed frame ${f.id}:`, err);
           break;
         }
       }
-    }
-
-    // Backfill embeddings for the visual memory (frames) so they are searchable.
-    try {
-      const framesToEmbed = await framesRepo.needingEmbeddings(100);
-      if (framesToEmbed.length > 0) {
-        console.log(`[Vera AI] Backfilling embeddings for ${framesToEmbed.length} frames...`);
-        for (const f of framesToEmbed) {
-          try {
-            const text = (f.ocr_text || "").trim();
-            if (text) {
-              const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-              await framesRepo.updateEmbedding(f.id, vector);
-            }
-          } catch (err) {
-            console.error(`[Vera AI] Failed to embed frame ${f.id}:`, err);
-            break;
-          }
-        }
-      }
-    } catch (err) {
-      console.error("[Vera AI] Frame embedding backfill failed:", err);
     }
 
     console.log("[Vera AI] Embedding backfill batch completed.");
@@ -101,7 +76,6 @@ function App() {
       try {
         await seedDatabaseIfEmpty();
         await initializeDefaultSettings();
-        await pruneOldCaptures();
         try {
           setOnboardingComplete(await settingsRepo.getOnboardingComplete());
         } catch (err) {

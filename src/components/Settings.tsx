@@ -1125,14 +1125,14 @@ export const Settings: React.FC = () => {
             </div>
           </div>
 
-          {/* Destructive Actions Card */}
+          {/* Legacy capture data (pre-frames) — one-time cleanup */}
           <div id="settings-clear-data" className="card-style p-5 flex flex-col gap-4 scroll-mt-6">
             <div className="flex flex-col gap-0.5">
               <span className="font-serif text-[17px] font-normal text-text-primary">
-                Clear Memory
+                Old capture data
               </span>
               <span className="font-sans text-[12px] text-text-faint">
-                Wipe some or all local screen history records
+                Clear the legacy text-only history from before the new encrypted visual memory. The new recordings are managed under “Screen recording” above.
               </span>
             </div>
 

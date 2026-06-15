@@ -7,17 +7,18 @@ import { getDb } from "./db";
 // Returns the chosen path, or null if the user cancelled.
 //
 // Excluded on purpose:
-//  - capture embeddings (large derived vectors, regenerable, not user content)
+//  - frame embeddings (large derived vectors, regenerable, not user content)
+//  - the encrypted media itself (segments + thumbnails stay on-device only)
 //  - stored cloud API keys (secrets must never land in a plaintext export)
 export async function exportAllData(): Promise<string | null> {
   const db = await getDb();
 
-  const [notes, goals, activity, captures, settingsRows, version] = await Promise.all([
+  const [notes, goals, activity, frames, settingsRows, version] = await Promise.all([
     db.select<any[]>("SELECT * FROM notes ORDER BY created_at ASC"),
     db.select<any[]>("SELECT * FROM goals ORDER BY created_at ASC"),
     db.select<any[]>("SELECT * FROM activity_events ORDER BY started_at ASC"),
     db.select<any[]>(
-      "SELECT id, captured_at, app_name, window_title, ocr_text, char_count FROM captures ORDER BY captured_at ASC"
+      "SELECT id, timestamp, app, window_title, url, ocr_text FROM frames ORDER BY timestamp ASC"
     ),
     db.select<any[]>("SELECT key, value FROM settings"),
     getVersion().catch(() => "unknown"),
@@ -29,18 +30,18 @@ export async function exportAllData(): Promise<string | null> {
     app: "Vera",
     version,
     exported_at: new Date().toISOString(),
-    note: "Local export from Vera. Capture embeddings and stored API keys are intentionally excluded.",
+    note: "Local export from Vera. Frame embeddings, the encrypted media, and stored API keys are intentionally excluded.",
     counts: {
       notes: notes.length,
       goals: goals.length,
       activity_events: activity.length,
-      captures: captures.length,
+      frames: frames.length,
       settings: settings.length,
     },
     notes,
     goals,
     activity_events: activity,
-    captures,
+    frames,
     settings,
   };
 
