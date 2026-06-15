@@ -873,6 +873,22 @@ export async function seedDatabaseIfEmpty() {
 export async function initializeDefaultSettings() {
   const db = await getDb();
 
+  // Defensive: guarantee the frame-capture table exists on every launch. The
+  // v5 migration also creates it, but this removes any dependency on migration
+  // timing/state so `frames` is always present once this build runs.
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS frames (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      app TEXT,
+      window_title TEXT,
+      url TEXT,
+      ocr_text TEXT,
+      image_path TEXT NOT NULL,
+      perceptual_hash TEXT
+    )`
+  );
+
   const checkAndSeed = async (key: string, defaultValue: string) => {
     const rows = await db.select<any[]>(
       "SELECT value FROM settings WHERE key = $1",

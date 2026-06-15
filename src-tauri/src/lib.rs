@@ -541,6 +541,28 @@ fn open_frames_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String
     Ok(conn)
 }
 
+/// Create the `frames` table directly against an existing vera.db at startup,
+/// so it exists even before the frontend loads the database (which is what
+/// triggers the sql-plugin migration). Idempotent; logs instead of panicking.
+fn ensure_frames_table_at(path: &Path) {
+    match rusqlite::Connection::open(path) {
+        Ok(conn) => {
+            let _ = conn.busy_timeout(Duration::from_millis(5000));
+            match conn.execute(
+                "CREATE TABLE IF NOT EXISTS frames (\
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                   timestamp INTEGER NOT NULL, app TEXT, window_title TEXT, url TEXT, \
+                   ocr_text TEXT, image_path TEXT NOT NULL, perceptual_hash TEXT)",
+                [],
+            ) {
+                Ok(_) => println!("[Vera Frames] frames table ready ({})", path.display()),
+                Err(e) => println!("[Vera Frames] could not ensure frames table: {}", e),
+            }
+        }
+        Err(e) => println!("[Vera Frames] could not open db to ensure frames table: {}", e),
+    }
+}
+
 /// Persist the frames-enabled flag so the supervisor resumes after a restart.
 fn persist_frames_enabled(app: &tauri::AppHandle, enabled: bool) {
     if let Ok(conn) = open_vera_db(app) {
@@ -1603,6 +1625,11 @@ pub fn run() {
                           println!("[Vera Cleanup] FAILED to clean captures at {}: {}", path.display(), e);
                       }
                   }
+
+                  // Make sure the frames table exists immediately on launch, even
+                  // with frame capture OFF (the sql-plugin migration also creates
+                  // it, but only once the frontend loads the database).
+                  ensure_frames_table_at(&path);
               }
               None => {
                   println!("[Vera Cleanup] no existing vera.db found yet — nothing to clean");
