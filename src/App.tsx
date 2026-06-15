@@ -9,7 +9,7 @@ import { Goals } from "./components/Goals";
 import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
-import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, capturesRepo, getDb, settingsRepo } from "./lib/db";
+import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, capturesRepo, framesRepo, getDb, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { ollamaClient } from "./lib/ollama";
@@ -34,23 +34,44 @@ async function backfillEmbeddings() {
       "SELECT id, ocr_text FROM captures WHERE (embedding IS NULL OR embedding = '') AND ocr_text != '' ORDER BY captured_at DESC LIMIT 100"
     );
 
-    if (unencoded.length === 0) {
-      return;
-    }
-
-    console.log(`[Vera AI] Backfilling embeddings for ${unencoded.length} captures...`);
-    for (const row of unencoded) {
-      try {
-        const text = row.ocr_text.trim();
-        if (text) {
-          const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-          await capturesRepo.updateEmbedding(row.id, vector);
+    if (unencoded.length > 0) {
+      console.log(`[Vera AI] Backfilling embeddings for ${unencoded.length} captures...`);
+      for (const row of unencoded) {
+        try {
+          const text = row.ocr_text.trim();
+          if (text) {
+            const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
+            await capturesRepo.updateEmbedding(row.id, vector);
+          }
+        } catch (err) {
+          console.error(`[Vera AI] Failed to generate embedding for capture ${row.id}:`, err);
+          break;
         }
-      } catch (err) {
-        console.error(`[Vera AI] Failed to generate embedding for capture ${row.id}:`, err);
-        break;
       }
     }
+
+    // Backfill embeddings for the visual memory (frames) so they are searchable.
+    try {
+      const framesToEmbed = await framesRepo.needingEmbeddings(100);
+      if (framesToEmbed.length > 0) {
+        console.log(`[Vera AI] Backfilling embeddings for ${framesToEmbed.length} frames...`);
+        for (const f of framesToEmbed) {
+          try {
+            const text = (f.ocr_text || "").trim();
+            if (text) {
+              const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
+              await framesRepo.updateEmbedding(f.id, vector);
+            }
+          } catch (err) {
+            console.error(`[Vera AI] Failed to embed frame ${f.id}:`, err);
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[Vera AI] Frame embedding backfill failed:", err);
+    }
+
     console.log("[Vera AI] Embedding backfill batch completed.");
   } catch (err) {
     console.error("[Vera AI] Error during backfill:", err);
@@ -119,6 +140,13 @@ function App() {
     const openAgents = () => setCurrentView("Agents");
     window.addEventListener("vera-open-agent", openAgents);
     return () => window.removeEventListener("vera-open-agent", openAgents);
+  }, []);
+
+  // "Jump to Timeline" from a cited frame thumbnail switches to the Timeline view
+  useEffect(() => {
+    const openTimeline = () => setCurrentView("Timeline");
+    window.addEventListener("vera-open-timeline", openTimeline);
+    return () => window.removeEventListener("vera-open-timeline", openTimeline);
   }, []);
 
   // The backend now writes captures/activity to SQLite directly (so capture

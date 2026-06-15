@@ -497,6 +497,88 @@ export const capturesRepo = {
   },
 };
 
+export interface DbFrame {
+  id: number;
+  timestamp: number;
+  app: string | null;
+  window_title: string | null;
+  url: string | null;
+  ocr_text: string | null;
+  segment_id: string | null;
+  frame_index: number | null;
+  thumbnail_path: string | null;
+  embedding?: string | null;
+}
+
+const FRAME_COLS =
+  "id, timestamp, app, window_title, url, ocr_text, segment_id, frame_index, thumbnail_path, embedding";
+
+// The visual-memory (frames) repo used by retrieval. Searching reads the index
+// (redacted ocr_text + metadata); media stays encrypted until a cited frame's
+// thumbnail is decrypted on demand for display.
+export const framesRepo = {
+  // Keyword candidates (+ optional time window), most recent first.
+  async search(
+    query?: string,
+    startMs?: number,
+    endMs?: number,
+    limit = 300
+  ): Promise<DbFrame[]> {
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL"];
+    const params: any[] = [];
+    let p = 1;
+    if (query && query.trim()) {
+      clauses.push(
+        `(ocr_text LIKE $${p} OR app LIKE $${p} OR window_title LIKE $${p} OR url LIKE $${p})`
+      );
+      params.push(`%${query.trim()}%`);
+      p++;
+    }
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Frames with text but no embedding yet (semantic-index backfill).
+  async needingEmbeddings(limit = 100): Promise<DbFrame[]> {
+    const db = await getDb();
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE (embedding IS NULL OR embedding = '') AND ocr_text IS NOT NULL AND ocr_text != '' ORDER BY timestamp DESC LIMIT $1`,
+      [limit]
+    );
+  },
+
+  async updateEmbedding(id: number, embedding: number[]): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE frames SET embedding = $1 WHERE id = $2", [
+      JSON.stringify(embedding),
+      id,
+    ]);
+  },
+
+  // All frames within [startMs, endMs), chronological — for the Timeline.
+  async forDay(startMs: number, endMs: number): Promise<DbFrame[]> {
+    const db = await getDb();
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE timestamp >= $1 AND timestamp < $2 ORDER BY timestamp ASC`,
+      [startMs, endMs]
+    );
+  },
+};
+
 // Keep regex patterns in one clearly commented, editable place.
 export function redactSensitiveData(text: string): string {
   let redacted = text;
@@ -916,12 +998,9 @@ export async function initializeDefaultSettings() {
     `CREATE TABLE IF NOT EXISTS frames (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp INTEGER NOT NULL,
-      app TEXT,
-      window_title TEXT,
-      url TEXT,
-      ocr_text TEXT,
-      image_path TEXT NOT NULL,
-      perceptual_hash TEXT
+      app TEXT, window_title TEXT, url TEXT, ocr_text TEXT,
+      image_path TEXT, perceptual_hash TEXT,
+      segment_id TEXT, frame_index INTEGER, thumbnail_path TEXT, embedding TEXT
     )`
   );
 

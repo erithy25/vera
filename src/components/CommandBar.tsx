@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "lucide-react";
 import { activityRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
-import { retrieveRelevantCaptures } from "../lib/retrieval";
+import { retrieveRelevantCaptures, retrieveRelevantFrames } from "../lib/retrieval";
 import { useUserProfile } from "../lib/useUserProfile";
 
 interface SourceReference {
@@ -12,12 +12,94 @@ interface SourceReference {
   captured_at: number;
 }
 
+interface FrameSource {
+  app: string | null;
+  window_title: string | null;
+  timestamp: number;
+  thumbnail_path: string | null;
+}
+
 interface HistoryEntry {
   id: string;
   query: string;
   reply: string;
   sources: SourceReference[];
+  frameSources?: FrameSource[];
 }
+
+// A cited frame from the visual memory: decrypts its thumbnail on demand (so the
+// store stays encrypted), shows the redaction-baked image, click to enlarge and
+// jump to that moment in the Timeline.
+const FrameThumbnail: React.FC<{ frame: FrameSource }> = ({ frame }) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [enlarged, setEnlarged] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (frame.thumbnail_path) {
+      invoke<string>("get_frame_thumbnail", { thumbnailPath: frame.thumbnail_path })
+        .then((url) => {
+          if (!cancelled) setSrc(url);
+        })
+        .catch((e) => console.error("Thumbnail decrypt failed:", e));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [frame.thumbnail_path]);
+
+  const timeStr = new Date(frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  if (!src) {
+    return <div className="w-[120px] h-[76px] rounded-lg bg-active-hover border border-border-hairline animate-pulse" />;
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setEnlarged(true)}
+        className="group flex flex-col gap-1 cursor-pointer text-left"
+        title={`${frame.app || "Screen"} — ${frame.window_title || ""} @ ${timeStr}`}
+      >
+        <img
+          src={src}
+          alt="captured frame"
+          className="w-[120px] h-[76px] object-cover rounded-lg border border-border-hairline group-hover:border-text-faint transition-colors"
+        />
+        <span className="text-[10px] text-text-faint truncate max-w-[120px]">
+          {frame.app || "Screen"} · {timeStr}
+        </span>
+      </button>
+      {enlarged && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-8"
+          onClick={() => setEnlarged(false)}
+        >
+          <div className="flex flex-col gap-3 items-center" onClick={(e) => e.stopPropagation()}>
+            <img src={src} alt="captured frame" className="max-w-[80vw] max-h-[70vh] rounded-xl border border-white/10" />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent("vera-open-timeline", { detail: frame.timestamp }));
+                  setEnlarged(false);
+                }}
+                className="px-3 py-1.5 rounded-full bg-white/10 text-white text-[12px] hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                Jump to Timeline
+              </button>
+              <button
+                onClick={() => setEnlarged(false)}
+                className="px-3 py-1.5 rounded-full bg-white/10 text-white text-[12px] hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
 
 const isGreeting = (text: string): boolean => {
   const clean = text.toLowerCase().trim().replace(/[?!.,]/g, "");
@@ -238,8 +320,11 @@ export const CommandBar: React.FC = () => {
       // Retrieve captures relevant to the query (semantic with LIKE fallback;
       // shared with the Researcher agent, always on-device)
       const relevantCaptures = await retrieveRelevantCaptures(query);
+      // Also search the encrypted visual memory (frames): keyword + semantic +
+      // optional time filter. Only a handful of candidates; nothing decrypts here.
+      const { hits: frameHits, timeRange } = await retrieveRelevantFrames(query);
 
-      // Update references / sources on entry
+      // Update references / sources on entry (captures + cited frames)
       setHistory((prev) =>
         prev.map((item) =>
           item.id === queryId
@@ -249,6 +334,12 @@ export const CommandBar: React.FC = () => {
                   app_name: c.app_name,
                   window_title: c.window_title,
                   captured_at: c.captured_at,
+                })),
+                frameSources: frameHits.map((h) => ({
+                  app: h.frame.app,
+                  window_title: h.frame.window_title,
+                  timestamp: h.frame.timestamp,
+                  thumbnail_path: h.frame.thumbnail_path,
                 })),
               }
             : item
@@ -289,6 +380,25 @@ Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 800)}"
         });
       } else {
         contextText += "\nNo matching screen captures found in memory.";
+      }
+
+      // Visual memory (frames) — the actual screen content, with timestamps the
+      // answer can cite. The matching thumbnails are shown under the answer.
+      contextText += `\n\n--- RELEVANT SCREEN FRAMES (visual memory${
+        timeRange ? `, filtered to ${timeRange.label}` : ""
+      }) ---\n`;
+      if (frameHits.length > 0) {
+        frameHits.forEach((h, idx) => {
+          const t = new Date(h.frame.timestamp).toLocaleTimeString();
+          contextText += `\n[Frame #${idx + 1}]
+Time: ${t}
+App: ${h.frame.app || "Unknown"}
+Window/Tab: ${h.frame.window_title || h.frame.url || "Unknown"}
+Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, 600)}"
+`;
+        });
+      } else {
+        contextText += "\nNo matching frames in visual memory.";
       }
 
       // Trim context to max chars
@@ -503,6 +613,20 @@ Rules:
                                 </div>
                               );
                             })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Cited frames from the visual memory (decrypted on demand) */}
+                      {item.frameSources && item.frameSources.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          <span className="font-sans text-[10px] text-text-faint uppercase tracking-wider font-semibold">
+                            From your screen
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {item.frameSources.map((fs, i) => (
+                              <FrameThumbnail key={i} frame={fs} />
+                            ))}
                           </div>
                         </div>
                       )}

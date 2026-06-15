@@ -629,6 +629,25 @@ fn has_vault_key() -> bool {
     unsafe { vault_has_key() == 1 }
 }
 
+/// Decrypt a single frame thumbnail on demand and return it as a JPEG data URL.
+/// Used by retrieval to show only the cited frames (a handful per query); the
+/// redaction boxes are already baked into the image. Logs the decrypt so the
+/// "decrypt only top-N" behaviour is observable.
+#[tauri::command]
+fn get_frame_thumbnail(app: tauri::AppHandle, thumbnail_path: String) -> Result<String, String> {
+    let data = std::fs::read(&thumbnail_path).map_err(|e| format!("read thumbnail: {}", e))?;
+    let plaintext = if is_encrypted(&data) {
+        let key = current_media_key(&app).ok_or_else(|| "vault locked".to_string())?;
+        decrypt_bytes(&key, &data)?
+    } else {
+        data
+    };
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
+    println!("[Vera Retrieval] decrypted 1 thumbnail for display");
+    Ok(format!("data:image/jpeg;base64,{}", b64))
+}
+
 // ---------- Frame-based screen recording (SCStream sidecar) ----------
 
 /// Directory for frame images: <app data>/frames (local, never iCloud).
@@ -676,6 +695,7 @@ fn ensure_frames_schema(conn: &rusqlite::Connection) {
         ("segment_id", "TEXT"),
         ("frame_index", "INTEGER"),
         ("thumbnail_path", "TEXT"),
+        ("embedding", "TEXT"), // nomic-embed vector (JSON) for semantic retrieval
     ] {
         if !existing.contains(col) {
             let _ = conn.execute(&format!("ALTER TABLE frames ADD COLUMN {} {}", col, decl), []);
@@ -2087,7 +2107,8 @@ pub fn run() {
       clear_all_frames,
       vault_unlock,
       is_vault_unlocked,
-      has_vault_key
+      has_vault_key,
+      get_frame_thumbnail
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

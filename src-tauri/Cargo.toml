@@ -41,3 +41,5 @@ regex = "1"
 libc = "0.2"
 # AES-256-GCM encryption at rest for screen-recording media (segments + thumbnails)
 aes-gcm = "0.10"
+# base64 for returning decrypted thumbnails as data URLs to the webview
+base64 = "0.22"
