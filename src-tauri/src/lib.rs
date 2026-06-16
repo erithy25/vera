@@ -1160,7 +1160,7 @@ fn spawn_frame_sidecar(app: &tauri::AppHandle, helper: &Path) -> Result<std::pro
     cmd.arg("--out-dir").arg(&out_dir)
         .arg("--fps").arg("1")
         .arg("--max-width").arg("1280")
-        .arg("--hash-threshold").arg("5")
+        .arg("--hash-threshold").arg("3")
         .arg("--vera-bundle-id").arg("app.vera.desktop")
         .arg("--segment-seconds").arg("600")
         .arg("--thumb-width").arg("320");

@@ -26,18 +26,47 @@ interface HistoryEntry {
   sources: SourceReference[];
   frameSources?: FrameSource[];
   thinkingSteps?: string[];
+  reasoning?: string;
   visionReply?: string;
   visionModel?: string;
   visionBusy?: boolean;
 }
 
-// Collapsible panel showing the REAL retrieval pipeline steps for an answer.
-const ThinkingPanel: React.FC<{ steps: string[]; live: boolean }> = ({ steps, live }) => {
+// Vera is told to think out loud first, then write a line starting with
+// "ANSWER:" before its final reply. This splits a (possibly partial, mid-stream)
+// response into that self-talk and the answer. The marker is matched only at a
+// line start (tolerating markdown like ** or #) so prose such as "the answer is"
+// never trips it. Until the marker streams in, everything is reasoning; the
+// caller falls back to treating the whole text as the answer if it never comes.
+const ANSWER_MARKER = /(^|\n)[\s>*#-]*answer\s*\**\s*:\**/i;
+const splitReasoning = (raw: string): { reasoning: string; answer: string } => {
+  const match = raw.match(ANSWER_MARKER);
+  if (!match || match.index === undefined) {
+    return { reasoning: raw, answer: "" };
+  }
+  const markerEnd = match.index + match[0].length;
+  return {
+    reasoning: raw.slice(0, match.index).trim(),
+    answer: raw.slice(markerEnd).trim(),
+  };
+};
+
+// Collapsible panel showing Vera's REAL thinking for an answer: the retrieval
+// pipeline steps plus the model's own out-loud reasoning, streamed live.
+const ThinkingPanel: React.FC<{ steps: string[]; reasoning?: string; live: boolean }> = ({
+  steps,
+  reasoning,
+  live,
+}) => {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (live) setOpen(true);
   }, [live]);
-  if (!steps || steps.length === 0) return null;
+  const reasoningText = (reasoning || "").trim();
+  const hasReasoning = reasoningText.length > 0;
+  const hasSteps = !!steps && steps.length > 0;
+  if (!hasSteps && !hasReasoning) return null;
+  const count = (steps?.length || 0) + (hasReasoning ? 1 : 0);
   return (
     <div className="flex flex-col gap-1.5">
       <button
@@ -53,17 +82,26 @@ const ThinkingPanel: React.FC<{ steps: string[]; live: boolean }> = ({ steps, li
           <span>Thought process</span>
         )}
         <span className="text-text-faint normal-case tracking-normal">
-          {open ? "▾" : "▸"} {steps.length}
+          {open ? "▾" : "▸"} {count}
         </span>
       </button>
       {open && (
-        <ol className="flex flex-col gap-1 pl-3 border-l border-border-hairline">
-          {steps.map((s, i) => (
-            <li key={i} className="font-sans text-[11px] text-text-muted leading-snug">
-              {s}
-            </li>
-          ))}
-        </ol>
+        <div className="flex flex-col gap-2 pl-3 border-l border-border-hairline">
+          {hasSteps && (
+            <ol className="flex flex-col gap-1">
+              {steps.map((s, i) => (
+                <li key={i} className="font-sans text-[11px] text-text-muted leading-snug">
+                  {s}
+                </li>
+              ))}
+            </ol>
+          )}
+          {hasReasoning && (
+            <p className="font-serif text-[12px] text-text-muted italic leading-relaxed whitespace-pre-wrap select-text">
+              {reasoningText}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -214,13 +252,27 @@ export const CommandBar: React.FC = () => {
   // Errors are surfaced in the answer area — no silent fallback to local.
   const runCloudCompletion = async (
     messages: { role: string; content: string }[],
-    queryId: string
+    queryId: string,
+    parseReasoning = false
   ) => {
     try {
-      const reply = await invoke<string>("generate_chat_completion", { messages });
-      setHistory((prev) =>
-        prev.map((item) => (item.id === queryId ? { ...item, reply } : item))
-      );
+      const raw = await invoke<string>("generate_chat_completion", { messages });
+      if (parseReasoning) {
+        // Cloud returns the whole response at once: split the out-loud reasoning
+        // from the final answer, falling back to the whole text if no marker.
+        const { reasoning, answer } = splitReasoning(raw);
+        setHistory((prev) =>
+          prev.map((item) =>
+            item.id === queryId
+              ? { ...item, reasoning: answer ? reasoning : "", reply: answer || raw.trim() }
+              : item
+          )
+        );
+      } else {
+        setHistory((prev) =>
+          prev.map((item) => (item.id === queryId ? { ...item, reply: raw } : item))
+        );
+      }
       await settingsRepo.setCloudLastStatus("ok");
     } catch (err: any) {
       const message = typeof err === "string" ? err : err?.message || String(err);
@@ -506,15 +558,18 @@ Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, 600)}"
         contextText = contextText.substring(0, MAX_CONTEXT_CHARS) + "\n[...truncated]";
       }
 
-      const systemPrompt = `You are Vera, a local AI personal assistant. Your job is to answer questions about the user's day based on the context provided below. This is a conversation — the user may ask follow-up questions that refer to earlier answers.
-Rules:
-1. Ground your answers strictly in the context (which includes activity stats, top apps, notes, goals, and screen captures).
-2. Answer questions about what the user worked on or how long they spent in apps by looking at the "TODAY'S ACTIVITY STATS" and "TOP 5 APPS TODAY" sections. Do not assume you have no information if the captures list is empty; the activity stats and top apps represent real recorded history.
-3. Be concise, honest, and direct.
-4. If the answer cannot be found in the context (neither in stats, top apps, notes, nor captures), say "I don't have that in your data". Do not make things up.
-5. Keep the response to 1-3 sentences or a brief bullet list if possible.
-6. All inference is running locally. Never mention internal details like embeddings, cosine similarity, vectors, or database queries.
-7. When the user asks a follow-up ("and the second?", "summarize that", "are you sure?"), use the conversation history to understand what they are referring to.`;
+      const systemPrompt = `You are Vera, a local AI personal assistant. Answer questions about the user's day based ONLY on the context provided below. This is a conversation — the user may ask follow-ups that refer to earlier answers.
+
+THINK OUT LOUD FIRST. Before answering, reason through the problem step by step, in the first person, like you are talking to yourself. Restate what the user is really asking. Walk through the context — the activity stats, top apps, notes, goals, and especially the screen frames (each has a time, an app, a window/tab, and the text content that was on screen). Name the specific frames, apps, and times you are leaning on ("The frame at 14:32 in Chrome shows…", "So that tells me…"), weigh what is relevant, and reason toward a conclusion. Be concrete — quote what you actually see in the context.
+
+Then, on a NEW LINE, write exactly "ANSWER:" and give your final reply.
+
+Rules for the final answer:
+1. Ground it strictly in the context. The "TODAY'S ACTIVITY STATS" and "TOP 5 APPS TODAY" sections are real recorded history — never claim you have no information just because the frames list is short.
+2. Be concise, honest, and direct: 1-3 sentences or a short bullet list.
+3. If the answer genuinely is not in the context (not in stats, top apps, notes, goals, nor frames), say "I don't have that in your data." Do not make things up.
+4. Use the conversation history to resolve follow-ups ("and the second?", "summarize that", "are you sure?").
+5. All inference runs locally. Never mention internal mechanics like embeddings, cosine similarity, vectors, or database queries.`;
 
       // Build the full message array: system + history + new user message
       const conversationHistory = buildConversationHistory(historySnapshot);
@@ -524,17 +579,32 @@ Rules:
         { role: "user", content: query },
       ];
 
-      // Generate the answer with the configured engine (retrieval stayed local)
+      // Generate the answer with the configured engine (retrieval stayed local).
+      // Vera reasons out loud first; we stream that self-talk into the thinking
+      // panel and the final answer into the reply as the marker arrives.
       if (engine === "cloud") {
-        await runCloudCompletion(messages, queryId);
+        await runCloudCompletion(messages, queryId, true);
       } else {
+        let raw = "";
         await ollamaClient.chatStream(chatModel, messages, (chunk) => {
+          raw += chunk;
+          const { reasoning, answer } = splitReasoning(raw);
           setHistory((prev) =>
             prev.map((item) =>
-              item.id === queryId ? { ...item, reply: item.reply + chunk } : item
+              item.id === queryId ? { ...item, reasoning, reply: answer } : item
             )
           );
         });
+        // Stream finished: if the model never emitted an "ANSWER:" marker, treat
+        // its whole response as the answer so the user always sees a reply.
+        const { answer } = splitReasoning(raw);
+        if (!answer) {
+          setHistory((prev) =>
+            prev.map((item) =>
+              item.id === queryId ? { ...item, reasoning: "", reply: raw.trim() } : item
+            )
+          );
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -678,9 +748,11 @@ Rules:
                         Vera
                       </span>
 
-                      {item.thinkingSteps && item.thinkingSteps.length > 0 && (
+                      {((item.thinkingSteps && item.thinkingSteps.length > 0) ||
+                        (item.reasoning && item.reasoning.trim())) && (
                         <ThinkingPanel
-                          steps={item.thinkingSteps}
+                          steps={item.thinkingSteps || []}
+                          reasoning={item.reasoning}
                           live={isLoading && idx === history.length - 1 && !item.reply}
                         />
                       )}

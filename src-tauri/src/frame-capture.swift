@@ -123,13 +123,10 @@ if !CGPreflightScreenCaptureAccess() {
 // MARK: - Substantive-line filter (mirrors the one-shot OCR helper)
 
 func isSubstantiveLine(_ text: String) -> Bool {
+    // Keep almost all readable text so Vera can actually read the whole screen
+    // (not just Terminal). Only drop empty / single-character OCR noise.
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.isEmpty { return false }
-    if trimmed.hasSuffix("...") || trimmed.hasSuffix("\u{2026}") { return false }
-    let words = trimmed.split(whereSeparator: { $0.isWhitespace })
-    if words.count == 1 && trimmed.count < 40 { return false }
-    if trimmed.count < 25 { return false }
-    return true
+    return trimmed.count >= 2
 }
 
 // MARK: - HEVC segment writer (VideoToolbox via AVAssetWriter)
@@ -218,6 +215,10 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let processQueue = DispatchQueue(label: "app.vera.frame-capture.process")
     private var stream: SCStream?
     private var lastHash: UInt64?
+    private var lastKeptTime: Date = .distantPast
+    // Keep at least one frame this often even if the screen looks unchanged, so
+    // a static window (reading, watching) is still recorded.
+    private let maxIntervalSeconds: TimeInterval = 25
     // Segment state — only ever touched on sampleQueue.
     private var segment: SegmentWriter?
     private var segmentStart: Date = .distantPast
@@ -304,7 +305,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
 
         guard let hash = Capturer.averageHash(cgImage) else { return }
-        if let last = lastHash, Capturer.hamming(hash, last) <= opts.hashThreshold {
+        let unchanged = (lastHash != nil && Capturer.hamming(hash, lastHash!) <= opts.hashThreshold)
+        let stale = Date().timeIntervalSince(lastKeptTime) >= maxIntervalSeconds
+        // Drop only if it looks unchanged AND we kept one recently; otherwise a
+        // static screen would never be recorded.
+        if unchanged && !stale {
             return
         }
 
@@ -338,6 +343,7 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let segId = seg.id
 
         lastHash = hash
+        lastKeptTime = Date()
         let hashHex = String(format: "%016llx", hash)
         let safeText = redaction.text
 
@@ -523,10 +529,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the frame (fail-safe: never store an un-redacted secret).
     static func redactFrame(pixelBuffer: CVPixelBuffer, cgImage: CGImage, ciImage: CIImage,
                             observations: [VNRecognizedTextObservation], ciContext: CIContext) -> Redaction {
-        var mainLines: [String] = []
-        var edgeLines: [String] = []
+        var lines: [String] = []
         var secretBoxes: [CGRect] = []
 
+        // Keep all readable text across the whole frame (left, center, right) so
+        // Vera reads the full screen of every app, not just the main column.
         for observation in observations {
             guard let candidate = observation.topCandidates(1).first else { continue }
             var line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -536,16 +543,9 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
                 line = redactText(line)
             }
             if !wasSecret && !isSubstantiveLine(line) { continue }
-            let box = observation.boundingBox
-            if box.midX < 0.2 || box.midX > 0.8 {
-                edgeLines.append(line)
-            } else {
-                mainLines.append(line)
-            }
+            lines.append(line)
         }
-        let mainText = mainLines.joined(separator: "\n")
-        let safeText = (mainText.count >= 200 ? mainText : (mainLines + edgeLines).joined(separator: "\n"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeText = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
 
         if secretBoxes.isEmpty {
             return Redaction(buffer: pixelBuffer, image: cgImage, text: safeText)
