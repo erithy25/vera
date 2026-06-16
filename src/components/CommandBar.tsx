@@ -479,19 +479,30 @@ export const CommandBar: React.FC = () => {
         notesRepo.list(),
       ]);
 
-      // Search the encrypted visual memory (frames): keyword + semantic + an
-      // optional time filter. Only a handful of candidates; nothing decrypts here.
-      const { hits: frameHits, timeRange } = await retrieveRelevantFrames(query);
+      // Search the encrypted visual memory (frames): app-aware → semantic →
+      // keyword → (broad-only) recent. Only the index is read; nothing decrypts.
+      const { hits: frameHits, timeRange, scope, apps: queryApps } = await retrieveRelevantFrames(query);
 
       if (frameHits.length > 0) {
         const apps = Array.from(new Set(frameHits.map((h) => h.frame.app).filter(Boolean))) as string[];
-        const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        addStep(
-          queryId,
-          `Found ${frameHits.length} matching frame${frameHits.length > 1 ? "s" : ""}${
-            timeRange ? ` (${timeRange.label})` : ""
-          }${apps.length ? ` in ${apps.slice(0, 3).join(", ")}` : ""}, near ${topTime}`
-        );
+        const range = timeRange ? ` (${timeRange.label})` : "";
+        if (scope === "app") {
+          addStep(
+            queryId,
+            `Found ${frameHits.length} distinct ${apps.join(", ") || "app"} page${frameHits.length > 1 ? "s" : ""}${range} in your recordings`
+          );
+        } else if (scope === "recent") {
+          const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          addStep(queryId, `No exact match — reviewing your ${frameHits.length} most recent frames${range}, near ${topTime}`);
+        } else {
+          const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          addStep(
+            queryId,
+            `Found ${frameHits.length} matching frame${frameHits.length > 1 ? "s" : ""}${range}${apps.length ? ` in ${apps.slice(0, 3).join(", ")}` : ""}, near ${topTime}`
+          );
+        }
+      } else if (scope === "none" && queryApps.length > 0) {
+        addStep(queryId, `No ${queryApps.join(", ")} frames in your recordings yet${timeRange ? ` for ${timeRange.label}` : ""}`);
       } else {
         addStep(queryId, `No matching frames${timeRange ? ` for ${timeRange.label}` : ""}; using your activity, notes & goals`);
       }
@@ -538,17 +549,23 @@ ${notes.map((n) => `- Title: "${n.title}"\n  Body: "${n.body || ""}"`).join("\n"
       // answer can cite. The matching thumbnails are shown under the answer.
       contextText += `\n\n--- RELEVANT SCREEN FRAMES (visual memory${
         timeRange ? `, filtered to ${timeRange.label}` : ""
-      }) ---\n`;
+      }${scope === "app" && queryApps.length ? `, ${queryApps.join("/")} pages` : ""}) ---\n`;
       if (frameHits.length > 0) {
+        // App-scoped results are distinct pages/windows: keep each entry compact
+        // (title + URL + a short snippet) so the model can list them all.
+        const snippetLen = scope === "app" ? 200 : 600;
         frameHits.forEach((h, idx) => {
           const t = new Date(h.frame.timestamp).toLocaleTimeString();
           contextText += `\n[Frame #${idx + 1}]
 Time: ${t}
 App: ${h.frame.app || "Unknown"}
-Window/Tab: ${h.frame.window_title || h.frame.url || "Unknown"}
-Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, 600)}"
+Page/Window title: ${h.frame.window_title || "Unknown"}
+URL: ${h.frame.url || "Unknown"}
+Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, snippetLen)}"
 `;
         });
+      } else if (scope === "none" && queryApps.length > 0) {
+        contextText += `\nThere are NO recorded frames for ${queryApps.join(", ")}. Either it was not used while recording was on, recording was paused, or those frames have not been captured yet. Say this honestly; do not guess what was on screen.`;
       } else {
         contextText += "\nNo matching frames in visual memory.";
       }

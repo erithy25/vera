@@ -290,6 +290,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .screen else { return }
         guard CMSampleBufferIsValid(sampleBuffer) else { return }
 
+        // Never record the lock screen, login window, or fast-user-switch
+        // screen — it is not activity and otherwise pollutes the visual memory
+        // (and dominates the "most recent frames" once you walk away).
+        if Capturer.isSessionLockedOrSwitched() { return }
+
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let info = attachments.first,
               let statusRaw = info[.status] as? Int,
@@ -318,6 +323,11 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let bundleId = frontmost?.bundleIdentifier ?? ""
         let pid = frontmost?.processIdentifier ?? -1
         if isExcludedFrontmost(name: appName, bundle: bundleId) {
+            return
+        }
+        // Skip macOS system UI (Dock, Spotlight, Notification Centre, the login
+        // window, …). It is not user activity and otherwise becomes junk frames.
+        if Capturer.isSystemProcess(name: appName, bundle: bundleId) {
             return
         }
 
@@ -472,6 +482,38 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     static func hamming(_ a: UInt64, _ b: UInt64) -> Int { (a ^ b).nonzeroBitCount }
+
+    /// True when the session is locked or this is not the active console
+    /// session, so the lock screen / login window is never recorded.
+    static func isSessionLockedOrSwitched() -> Bool {
+        guard let dict = CGSessionCopyCurrentDictionary() as? [String: AnyObject] else { return false }
+        if let locked = dict["CGSSessionScreenIsLocked"] as? NSNumber, locked.boolValue { return true }
+        if let onConsole = dict["kCGSSessionOnConsoleKey"] as? NSNumber, !onConsole.boolValue { return true }
+        return false
+    }
+
+    /// macOS system UI that is not "user activity" and must never be recorded
+    /// as a captured app (lock screen, Dock, Spotlight, Notification Centre, …).
+    static let systemProcessNames: Set<String> = [
+        "loginwindow", "login window", "windowserver", "window server",
+        "dock", "systemuiserver", "controlcenter", "control center",
+        "notificationcenter", "notification center", "usernotificationcenter",
+        "spotlight", "screensaverengine", "screensaver", "screen saver",
+        "coreautha", "universalcontrol", "wallpaper", "talagent",
+        "screencaptureui", "lockoutagent",
+    ]
+
+    static func isSystemProcess(name: String, bundle: String) -> Bool {
+        let n = name.lowercased()
+        let b = bundle.lowercased()
+        if systemProcessNames.contains(n) { return true }
+        for frag in ["loginwindow", "windowserver", "screensaver", "systemuiserver",
+                     "notificationcenter", "controlcenter", "com.apple.dock",
+                     "spotlight", "wallpaper"] where b.contains(frag) {
+            return true
+        }
+        return false
+    }
 
     /// Downscale to maxWidth and JPEG-encode a thumbnail.
     static func saveJPEGThumbnail(_ cgImage: CGImage, to path: String, maxWidth: Int) -> Bool {

@@ -513,6 +513,21 @@ export interface DbFrame {
 const FRAME_COLS =
   "id, timestamp, app, window_title, url, ocr_text, segment_id, frame_index, thumbnail_path, embedding";
 
+// macOS system UI that is not real activity. Older recordings may still contain
+// these (captured before the sidecar/Rust filters existed), so every read path
+// excludes them — keeps the lock screen / Notification Centre out of results.
+const SYSTEM_APPS = [
+  "loginwindow", "login window", "windowserver", "window server", "dock",
+  "systemuiserver", "controlcenter", "control center", "notificationcenter",
+  "notification center", "usernotificationcenter", "spotlight",
+  "screensaverengine", "screensaver", "screen saver", "coreautha",
+  "universalcontrol", "wallpaper", "talagent", "screencaptureui",
+  "lockoutagent", "unknown",
+];
+// Hardcoded constant (no user input) → safe to inline as a SQL literal list.
+const SYSTEM_APPS_SQL = SYSTEM_APPS.map((a) => `'${a}'`).join(", ");
+const NOT_SYSTEM_APP = `LOWER(COALESCE(app, '')) NOT IN (${SYSTEM_APPS_SQL})`;
+
 // The visual-memory (frames) repo used by retrieval. Searching reads the index
 // (redacted ocr_text + metadata); media stays encrypted until a cited frame's
 // thumbnail is decrypted on demand for display.
@@ -525,7 +540,7 @@ export const framesRepo = {
     limit = 300
   ): Promise<DbFrame[]> {
     const db = await getDb();
-    const clauses: string[] = ["thumbnail_path IS NOT NULL"];
+    const clauses: string[] = ["thumbnail_path IS NOT NULL", NOT_SYSTEM_APP];
     const params: any[] = [];
     let p = 1;
     if (query && query.trim()) {
@@ -535,6 +550,93 @@ export const framesRepo = {
       params.push(`%${query.trim()}%`);
       p++;
     }
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Distinct real app names present in the visual memory (system UI excluded).
+  // Used by retrieval to detect when a query names an app ("Safari", "Notes").
+  async distinctApps(): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db.select<{ app: string | null }[]>(
+      `SELECT DISTINCT app FROM frames WHERE app IS NOT NULL AND app != '' AND thumbnail_path IS NOT NULL AND ${NOT_SYSTEM_APP}`
+    );
+    return rows.map((r) => r.app || "").filter((a) => a.length > 0);
+  },
+
+  // All frames for a set of apps (case-insensitive), most recent first. Powers
+  // app-scoped questions like "which tabs in Safari have I been on".
+  async byApps(
+    apps: string[],
+    startMs?: number,
+    endMs?: number,
+    limit = 300
+  ): Promise<DbFrame[]> {
+    const names = apps.map((a) => a.trim()).filter((a) => a.length > 0);
+    if (names.length === 0) return [];
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL"];
+    const params: any[] = [];
+    let p = 1;
+    const appOrs = names.map((n) => {
+      params.push(n);
+      return `LOWER(app) = LOWER($${p++})`;
+    });
+    clauses.push(`(${appOrs.join(" OR ")})`);
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Keyword search that ORs each term across ocr_text/app/window_title/url, so a
+  // multi-word query ("github pull request") matches on any word — unlike the
+  // single full-phrase LIKE in search(). System UI excluded.
+  async searchAny(
+    tokens: string[],
+    startMs?: number,
+    endMs?: number,
+    limit = 200
+  ): Promise<DbFrame[]> {
+    const terms = tokens.map((t) => t.trim()).filter((t) => t.length >= 2);
+    if (terms.length === 0) return [];
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL", NOT_SYSTEM_APP];
+    const params: any[] = [];
+    let p = 1;
+    const ors: string[] = [];
+    for (const t of terms) {
+      ors.push(
+        `(ocr_text LIKE $${p} OR app LIKE $${p} OR window_title LIKE $${p} OR url LIKE $${p})`
+      );
+      params.push(`%${t}%`);
+      p++;
+    }
+    clauses.push(`(${ors.join(" OR ")})`);
     if (typeof startMs === "number") {
       clauses.push(`timestamp >= $${p}`);
       params.push(startMs);
@@ -580,7 +682,7 @@ export const framesRepo = {
   async forDay(startMs: number, endMs: number): Promise<DbFrame[]> {
     const db = await getDb();
     return db.select<DbFrame[]>(
-      `SELECT ${FRAME_COLS} FROM frames WHERE timestamp >= $1 AND timestamp < $2 ORDER BY timestamp ASC`,
+      `SELECT ${FRAME_COLS} FROM frames WHERE timestamp >= $1 AND timestamp < $2 AND ${NOT_SYSTEM_APP} ORDER BY timestamp ASC`,
       [startMs, endMs]
     );
   },

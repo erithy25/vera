@@ -93,6 +93,16 @@ const SYSTEM_PROCESS_BLOCKLIST: &[&str] = &[
     "systemuiserver",
     "controlcenter",
     "control center",
+    "notificationcenter",
+    "notification center",
+    "usernotificationcenter",
+    "spotlight",
+    "coreautha",
+    "universalcontrol",
+    "wallpaper",
+    "talagent",
+    "screencaptureui",
+    "lockoutagent",
     "dock",
     "unknown", // tracker fallback when a process has no proper localized name
 ];
@@ -106,6 +116,8 @@ fn is_system_process(app_name: &str, bundle_id: &str) -> bool {
         || bundle_lower.contains("windowserver")
         || bundle_lower.contains("screensaver")
         || bundle_lower.contains("systemuiserver")
+        || bundle_lower.contains("notificationcenter")
+        || bundle_lower.contains("spotlight")
         || bundle_lower == "com.apple.controlcenter"
         || bundle_lower == "com.apple.dock"
 }
@@ -995,6 +1007,14 @@ fn persist_frame(app: &tauri::AppHandle, v: &serde_json::Value) -> Result<(), St
 
     if thumbnail_path.is_empty() {
         return Err("frame missing thumbnail_path".to_string());
+    }
+
+    // Never store macOS system UI (lock screen, Notification Centre, Dock,
+    // Spotlight, …). It is not user activity and otherwise dominates the
+    // "recent frames" fallback with junk like the login window.
+    if is_system_process(app_name, bundle_id) {
+        let _ = std::fs::remove_file(thumbnail_path);
+        return Ok(());
     }
 
     // Defensive exclude re-check against the current settings.
