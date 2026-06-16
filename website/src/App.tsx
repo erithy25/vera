@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // ---------------------------------------------------------------------------
 // Vera marketing site — a full-length product landing page in Vera's warm
@@ -168,6 +168,19 @@ function FAQItem({ q, a }: { q: string; a: string }) {
 }
 
 export function App() {
+  // Show the version that is actually published, read from the same manifest
+  // the release script writes alongside the DMG. This way the number on the
+  // site can never drift from the real download (omitted if it can't load).
+  const [publishedVersion, setPublishedVersion] = useState<string | null>(null);
+  useEffect(() => {
+    fetch("/updater/latest.json", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.version === "string") setPublishedVersion(d.version);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="min-h-dvh flex flex-col">
       {/* Sticky nav */}
@@ -325,7 +338,7 @@ export function App() {
           </div>
         </div>
         <div className="max-w-[1120px] mx-auto px-6 sm:px-10 pb-10">
-          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Local AI for macOS · v0.5.0</span>
+          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Local AI for macOS{publishedVersion ? ` · v${publishedVersion}` : ""}</span>
         </div>
       </footer>
     </div>
