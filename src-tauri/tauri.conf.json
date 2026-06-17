@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Vera",
-  "version": "0.2.0",
+  "version": "0.5.2",
   "identifier": "app.vera.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -34,7 +34,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "binaries/ocr-helper"
+      "binaries/ocr-helper",
+      "binaries/frame-capture",
+      "binaries/frame-extract"
     ],
     "macOS": {
       "dmg": {
@@ -54,6 +56,15 @@
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ3NUQxNTJGMzY2M0Q1RTMKUldUajFXTTJMeFZkMXdZa3FUdkNQSEo1YUdjNFJJbDMvRmo2K1RHTVh6MHZlTmNXRDY1cE5TT28K",
+      "endpoints": [
+        "https://vera-sandy.vercel.app/updater/latest.json"
+      ]
     }
   }
 }

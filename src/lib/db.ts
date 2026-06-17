@@ -497,6 +497,197 @@ export const capturesRepo = {
   },
 };
 
+export interface DbFrame {
+  id: number;
+  timestamp: number;
+  app: string | null;
+  window_title: string | null;
+  url: string | null;
+  ocr_text: string | null;
+  segment_id: string | null;
+  frame_index: number | null;
+  thumbnail_path: string | null;
+  embedding?: string | null;
+}
+
+const FRAME_COLS =
+  "id, timestamp, app, window_title, url, ocr_text, segment_id, frame_index, thumbnail_path, embedding";
+
+// macOS system UI that is not real activity. Older recordings may still contain
+// these (captured before the sidecar/Rust filters existed), so every read path
+// excludes them — keeps the lock screen / Notification Centre out of results.
+const SYSTEM_APPS = [
+  "loginwindow", "login window", "windowserver", "window server", "dock",
+  "systemuiserver", "controlcenter", "control center", "notificationcenter",
+  "notification center", "usernotificationcenter", "spotlight",
+  "screensaverengine", "screensaver", "screen saver", "coreautha",
+  "universalcontrol", "wallpaper", "talagent", "screencaptureui",
+  "lockoutagent", "unknown",
+];
+// Hardcoded constant (no user input) → safe to inline as a SQL literal list.
+const SYSTEM_APPS_SQL = SYSTEM_APPS.map((a) => `'${a}'`).join(", ");
+const NOT_SYSTEM_APP = `LOWER(COALESCE(app, '')) NOT IN (${SYSTEM_APPS_SQL})`;
+
+// The visual-memory (frames) repo used by retrieval. Searching reads the index
+// (redacted ocr_text + metadata); media stays encrypted until a cited frame's
+// thumbnail is decrypted on demand for display.
+export const framesRepo = {
+  // Keyword candidates (+ optional time window), most recent first.
+  async search(
+    query?: string,
+    startMs?: number,
+    endMs?: number,
+    limit = 300
+  ): Promise<DbFrame[]> {
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL", NOT_SYSTEM_APP];
+    const params: any[] = [];
+    let p = 1;
+    if (query && query.trim()) {
+      clauses.push(
+        `(ocr_text LIKE $${p} OR app LIKE $${p} OR window_title LIKE $${p} OR url LIKE $${p})`
+      );
+      params.push(`%${query.trim()}%`);
+      p++;
+    }
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Distinct real app names present in the visual memory (system UI excluded).
+  // Used by retrieval to detect when a query names an app ("Safari", "Notes").
+  async distinctApps(): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db.select<{ app: string | null }[]>(
+      `SELECT DISTINCT app FROM frames WHERE app IS NOT NULL AND app != '' AND thumbnail_path IS NOT NULL AND ${NOT_SYSTEM_APP}`
+    );
+    return rows.map((r) => r.app || "").filter((a) => a.length > 0);
+  },
+
+  // All frames for a set of apps (case-insensitive), most recent first. Powers
+  // app-scoped questions like "which tabs in Safari have I been on".
+  async byApps(
+    apps: string[],
+    startMs?: number,
+    endMs?: number,
+    limit = 300
+  ): Promise<DbFrame[]> {
+    const names = apps.map((a) => a.trim()).filter((a) => a.length > 0);
+    if (names.length === 0) return [];
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL"];
+    const params: any[] = [];
+    let p = 1;
+    const appOrs = names.map((n) => {
+      params.push(n);
+      return `LOWER(app) = LOWER($${p++})`;
+    });
+    clauses.push(`(${appOrs.join(" OR ")})`);
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Keyword search that ORs each term across ocr_text/app/window_title/url, so a
+  // multi-word query ("github pull request") matches on any word — unlike the
+  // single full-phrase LIKE in search(). System UI excluded.
+  async searchAny(
+    tokens: string[],
+    startMs?: number,
+    endMs?: number,
+    limit = 200
+  ): Promise<DbFrame[]> {
+    const terms = tokens.map((t) => t.trim()).filter((t) => t.length >= 2);
+    if (terms.length === 0) return [];
+    const db = await getDb();
+    const clauses: string[] = ["thumbnail_path IS NOT NULL", NOT_SYSTEM_APP];
+    const params: any[] = [];
+    let p = 1;
+    const ors: string[] = [];
+    for (const t of terms) {
+      ors.push(
+        `(ocr_text LIKE $${p} OR app LIKE $${p} OR window_title LIKE $${p} OR url LIKE $${p})`
+      );
+      params.push(`%${t}%`);
+      p++;
+    }
+    clauses.push(`(${ors.join(" OR ")})`);
+    if (typeof startMs === "number") {
+      clauses.push(`timestamp >= $${p}`);
+      params.push(startMs);
+      p++;
+    }
+    if (typeof endMs === "number") {
+      clauses.push(`timestamp < $${p}`);
+      params.push(endMs);
+      p++;
+    }
+    params.push(limit);
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC LIMIT $${p}`,
+      params
+    );
+  },
+
+  // Frames with text but no embedding yet (semantic-index backfill).
+  async needingEmbeddings(limit = 100): Promise<DbFrame[]> {
+    const db = await getDb();
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE (embedding IS NULL OR embedding = '') AND ocr_text IS NOT NULL AND ocr_text != '' ORDER BY timestamp DESC LIMIT $1`,
+      [limit]
+    );
+  },
+
+  async updateEmbedding(id: number, embedding: number[]): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE frames SET embedding = $1 WHERE id = $2", [
+      JSON.stringify(embedding),
+      id,
+    ]);
+  },
+
+  // Remove a single frame row (its encrypted media is reclaimed by eviction /
+  // "Delete all recordings"; deleting one row does not touch the segment file).
+  async removeRow(id: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM frames WHERE id = $1", [id]);
+  },
+
+  // All frames within [startMs, endMs), chronological — for the Timeline.
+  async forDay(startMs: number, endMs: number): Promise<DbFrame[]> {
+    const db = await getDb();
+    return db.select<DbFrame[]>(
+      `SELECT ${FRAME_COLS} FROM frames WHERE timestamp >= $1 AND timestamp < $2 AND ${NOT_SYSTEM_APP} ORDER BY timestamp ASC`,
+      [startMs, endMs]
+    );
+  },
+};
+
 // Keep regex patterns in one clearly commented, editable place.
 export function redactSensitiveData(text: string): string {
   let redacted = text;
@@ -569,6 +760,61 @@ export const settingsRepo = {
     await db.execute(
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('capture_paused', $1)",
       [String(paused)]
+    );
+  },
+
+  async getFramesCaptureEnabled(): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'frames_capture_enabled'"
+    );
+    if (rows.length > 0) {
+      return rows[0].value === "true";
+    }
+    return false; // default OFF
+  },
+
+  async setFramesCaptureEnabled(enabled: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_capture_enabled', $1)",
+      [String(enabled)]
+    );
+  },
+
+  async getFramesMaxStorageMb(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'frames_max_storage_mb'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return 2048; // 2 GB default
+  },
+
+  async setFramesMaxStorageMb(mb: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_max_storage_mb', $1)",
+      [String(Math.max(1, Math.floor(mb)))]
+    );
+  },
+
+  async getFramesRetentionDays(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'frames_retention_days'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return 30;
+  },
+
+  async setFramesRetentionDays(days: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('frames_retention_days', $1)",
+      [String(Math.max(1, Math.floor(days)))]
     );
   },
 
@@ -783,6 +1029,23 @@ export const settingsRepo = {
     );
   },
 
+  // Mirror of the OS "start at login" state (the OS Login Items is the truth).
+  async getAutostartEnabled(): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'autostart_enabled'"
+    );
+    return rows.length > 0 && rows[0].value === "true";
+  },
+
+  async setAutostartEnabled(enabled: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('autostart_enabled', $1)",
+      [enabled ? "true" : "false"]
+    );
+  },
+
   // Last known cloud reachability ("ok" | "failed" | ""), used by the engine badge
   async getCloudLastStatus(): Promise<string> {
     const db = await getDb();
@@ -837,6 +1100,19 @@ export async function seedDatabaseIfEmpty() {
 export async function initializeDefaultSettings() {
   const db = await getDb();
 
+  // Defensive: guarantee the frame-capture table exists on every launch. The
+  // v5 migration also creates it, but this removes any dependency on migration
+  // timing/state so `frames` is always present once this build runs.
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS frames (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      app TEXT, window_title TEXT, url TEXT, ocr_text TEXT,
+      image_path TEXT, perceptual_hash TEXT,
+      segment_id TEXT, frame_index INTEGER, thumbnail_path TEXT, embedding TEXT
+    )`
+  );
+
   const checkAndSeed = async (key: string, defaultValue: string) => {
     const rows = await db.select<any[]>(
       "SELECT value FROM settings WHERE key = $1",
@@ -865,6 +1141,9 @@ export async function initializeDefaultSettings() {
   ];
 
   await checkAndSeed("capture_paused", "false"); // active/not-paused by default for new installs
+  await checkAndSeed("frames_capture_enabled", "false"); // frame-based screen recording OFF by default
+  await checkAndSeed("frames_max_storage_mb", "2048"); // 2 GB budget for HEVC segments + thumbnails
+  await checkAndSeed("frames_retention_days", "30"); // evict frame data older than this
   await checkAndSeed("excluded_apps", JSON.stringify(defaultApps));
   await checkAndSeed("excluded_domains", "[]");
   await checkAndSeed("redaction_enabled", "true");
@@ -878,6 +1157,7 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("cloud_last_status", "");
   await checkAndSeed("user_name", "");
   await checkAndSeed("onboarding_complete", "false");
+  await checkAndSeed("autostart_enabled", "false");
 
   // One-time removal of the old seeded placeholder notes (empty-body samples).
   // Title + empty-body match, so a note the user actually edited is preserved.

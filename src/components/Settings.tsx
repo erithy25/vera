@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { Plus, X, Shield, ShieldAlert, Trash2, RotateCcw } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
@@ -11,8 +12,23 @@ type CloudProvider = "anthropic" | "openai";
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
 
+const formatBytes = (n: number): string => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
 export const Settings: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true);
+  const [framesEnabled, setFramesEnabled] = useState<boolean>(false);
+  const [vaultUnlocked, setVaultUnlocked] = useState<boolean>(false);
+  const [framesStorageBytes, setFramesStorageBytes] = useState<number>(0);
+  const [framesMaxStorageMb, setFramesMaxStorageMb] = useState<number>(2048);
+  const [framesRetentionDays, setFramesRetentionDays] = useState<number>(30);
+  const [deleteFrom, setDeleteFrom] = useState<string>("");
+  const [deleteTo, setDeleteTo] = useState<string>("");
+  const [deleteBusy, setDeleteBusy] = useState<boolean>(false);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
@@ -22,6 +38,11 @@ export const Settings: React.FC = () => {
   const [userName, setUserNameState] = useState<string>("");
   const [permAccessibility, setPermAccessibility] = useState<boolean>(false);
   const [permScreenRecording, setPermScreenRecording] = useState<boolean>(false);
+
+  // Start-at-login (autostart). The OS Login Items is the source of truth.
+  const [autostartOn, setAutostartOn] = useState<boolean>(false);
+  const [autostartBusy, setAutostartBusy] = useState<boolean>(false);
+  const [autostartError, setAutostartError] = useState<string | null>(null);
 
   // AI Engine state (local by default; cloud is bring-your-own-key)
   const [aiEngine, setAiEngine] = useState<AiEngine>("local");
@@ -66,8 +87,9 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
+      const [paused, framesOn, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
         settingsRepo.getCapturePaused(),
+        settingsRepo.getFramesCaptureEnabled(),
         settingsRepo.getExcludedApps(),
         settingsRepo.getExcludedDomains(),
         settingsRepo.getRedactionEnabled(),
@@ -80,7 +102,17 @@ export const Settings: React.FC = () => {
       ]);
 
       setIsPaused(paused);
+      setFramesEnabled(framesOn);
       setExcludedApps(apps);
+
+      setFramesMaxStorageMb(await settingsRepo.getFramesMaxStorageMb());
+      setFramesRetentionDays(await settingsRepo.getFramesRetentionDays());
+      try {
+        setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
+        setVaultUnlocked(await invoke<boolean>("is_vault_unlocked"));
+      } catch (err) {
+        console.error("Failed to read frame storage/vault state:", err);
+      }
       setExcludedDomains(domains);
       setRedactionEnabled(redaction);
       setRetentionDays(retention);
@@ -121,11 +153,40 @@ export const Settings: React.FC = () => {
   useEffect(() => {
     loadSettings();
     refreshPermissions();
+    // Reflect the real OS Login Items state
+    isAutostartEnabled()
+      .then(setAutostartOn)
+      .catch((err) => console.error("Failed to read autostart state:", err));
     // Re-check when the user returns from System Settings
     const onFocus = () => refreshPermissions();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  const handleToggleAutostart = async () => {
+    if (autostartBusy) return;
+    setAutostartBusy(true);
+    setAutostartError(null);
+    const next = !autostartOn;
+    try {
+      if (next) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+      // Confirm against the real OS state rather than assuming
+      setAutostartOn(await isAutostartEnabled());
+      try {
+        await settingsRepo.setAutostartEnabled(next);
+      } catch (e) {
+        console.error("Failed to persist autostart pref:", e);
+      }
+    } catch (err) {
+      setAutostartError(errorToMessage(err));
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
 
   // Scroll to a section requested from the profile menu (on mount and on event)
   useEffect(() => {
@@ -286,6 +347,102 @@ export const Settings: React.FC = () => {
       setOllamaError(`Failed to pull ${cleaned}: ${err.message || err}`);
       setPullingModel(null);
       setPullProgress(null);
+    }
+  };
+
+  const handleVaultUnlock = async () => {
+    try {
+      await invoke("vault_unlock"); // Touch ID (or transparent fallback key)
+      setVaultUnlocked(true);
+      return true;
+    } catch (err) {
+      console.error("Vault unlock failed:", err);
+      window.alert("Aufnahme konnte nicht aktiviert werden (Schlüssel-Tresor): " + errorToMessage(err));
+      return false;
+    }
+  };
+
+  const handleToggleFrames = async () => {
+    const nextState = !framesEnabled;
+    // Turning recording on requires unlocking the encrypted store with Touch ID.
+    if (nextState && !vaultUnlocked) {
+      const ok = await handleVaultUnlock();
+      if (!ok) return; // stay off if the user cancels Touch ID
+    }
+    setFramesEnabled(nextState);
+    try {
+      await settingsRepo.setFramesCaptureEnabled(nextState);
+      await invoke("set_frames_capture_enabled", { enabled: nextState });
+    } catch (err) {
+      console.error("Failed to toggle frame capture:", err);
+      setFramesEnabled(!nextState); // revert on failure
+    }
+  };
+
+  const handleFramesStorageChange = async (mb: number) => {
+    setFramesMaxStorageMb(mb);
+    try {
+      await settingsRepo.setFramesMaxStorageMb(mb);
+    } catch (err) {
+      console.error("Failed to set frame storage budget:", err);
+    }
+  };
+
+  const handleFramesRetentionChange = async (days: number) => {
+    setFramesRetentionDays(days);
+    try {
+      await settingsRepo.setFramesRetentionDays(days);
+    } catch (err) {
+      console.error("Failed to set frame retention:", err);
+    }
+  };
+
+  const refreshFramesStorage = async () => {
+    try {
+      setFramesStorageBytes(await invoke<number>("get_frames_storage_bytes"));
+    } catch (err) {
+      console.error("Failed to read frame storage size:", err);
+    }
+  };
+
+  const runDeleteRange = async (startMs: number, endMs: number) => {
+    setDeleteBusy(true);
+    try {
+      await invoke<number>("delete_frames_range", { startMs, endMs });
+      await refreshFramesStorage();
+    } catch (err) {
+      console.error("Failed to delete recordings:", err);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleFramesDeleteLast15 = () => runDeleteRange(Date.now() - 15 * 60 * 1000, Date.now());
+
+  const handleFramesDeleteToday = () => {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return runDeleteRange(midnight, Date.now());
+  };
+
+  const handleFramesDeleteRange = () => {
+    if (!deleteFrom || !deleteTo) return;
+    const start = new Date(deleteFrom).getTime();
+    const end = new Date(deleteTo).getTime() + 24 * 60 * 60 * 1000 - 1; // include the whole 'to' day
+    if (isNaN(start) || isNaN(end) || start > end) return;
+    return runDeleteRange(start, end);
+  };
+
+  const handleFramesClearAll = async () => {
+    if (!window.confirm("Delete ALL captured screen recordings? This cannot be undone.")) return;
+    setDeleteBusy(true);
+    try {
+      await invoke("clear_all_frames");
+      await refreshFramesStorage();
+    } catch (err) {
+      console.error("Failed to clear recordings:", err);
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -745,6 +902,178 @@ export const Settings: React.FC = () => {
             </div>
           </div>
 
+          {/* Frame-based Screen Recording Card (default OFF) */}
+          <div className="card-style p-5 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Screen recording (frames)
+                </span>
+                <span className="font-sans text-[12px] text-text-muted leading-normal">
+                  Periodically saves a downscaled snapshot of your screen (about once per second, only when the view changes) so Vera can build a richer visual memory. Stored locally on this Mac; off by default.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={framesEnabled}
+                onChange={handleToggleFrames}
+                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
+              />
+            </div>
+
+            {framesEnabled && (
+              <div className="flex items-center justify-between gap-2 pt-3 border-t border-border-hairline">
+                <span className="font-sans text-[12px] text-text-faint flex items-center gap-1.5">
+                  <Shield size={12} />
+                  {vaultUnlocked
+                    ? "Encrypted at rest · unlocked this session"
+                    : "Encrypted · locked — unlock to record"}
+                </span>
+                {!vaultUnlocked && (
+                  <button
+                    onClick={handleVaultUnlock}
+                    className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    Unlock with Touch ID
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Frame Storage (usage + budget + retention) Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-0.5">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Frame Storage
+                </span>
+                <span className="font-sans text-[12px] text-text-faint">
+                  HEVC segments + thumbnails on this Mac
+                </span>
+              </div>
+              <button
+                onClick={refreshFramesStorage}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer"
+              >
+                {formatBytes(framesStorageBytes)} used
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Storage budget</span>
+              <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+                {[
+                  { l: "512 MB", v: 512 },
+                  { l: "2 GB", v: 2048 },
+                  { l: "5 GB", v: 5120 },
+                  { l: "10 GB", v: 10240 },
+                ].map((opt) => {
+                  const active = framesMaxStorageMb === opt.v;
+                  return (
+                    <button
+                      key={opt.v}
+                      onClick={() => handleFramesStorageChange(opt.v)}
+                      className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                        active
+                          ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                          : "text-text-muted hover:text-text-primary"
+                      }`}
+                    >
+                      {opt.l}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Keep frames for</span>
+              <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+                {[7, 30, 90, 365].map((d) => {
+                  const active = framesRetentionDays === d;
+                  const label = d === 365 ? "1 Year" : `${d} Days`;
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => handleFramesRetentionChange(d)}
+                      className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                        active
+                          ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                          : "text-text-muted hover:text-text-primary"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Recording Data Management Card */}
+          <div className="card-style p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-serif text-[17px] font-normal text-text-primary">
+                Recording Data
+              </span>
+              <span className="font-sans text-[12px] text-text-faint">
+                Delete captured screen history from this Mac
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleFramesDeleteLast15}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete last 15 min
+              </button>
+              <button
+                onClick={handleFramesDeleteToday}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete today
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="font-sans text-[12px] text-text-muted">Delete a date range</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  value={deleteFrom}
+                  onChange={(e) => setDeleteFrom(e.target.value)}
+                  className="px-2 py-1.5 border border-border-hairline rounded-lg text-[12px] font-sans bg-card-surface text-text-primary"
+                />
+                <span className="text-text-faint text-[12px]">to</span>
+                <input
+                  type="date"
+                  value={deleteTo}
+                  onChange={(e) => setDeleteTo(e.target.value)}
+                  className="px-2 py-1.5 border border-border-hairline rounded-lg text-[12px] font-sans bg-card-surface text-text-primary"
+                />
+                <button
+                  onClick={handleFramesDeleteRange}
+                  disabled={deleteBusy || !deleteFrom || !deleteTo}
+                  className="px-3 py-1.5 border border-border-hairline rounded-full text-[12px] font-sans text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+                >
+                  Delete range
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={handleFramesClearAll}
+              disabled={deleteBusy}
+              className="self-start px-3 py-1.5 border border-red-500/30 rounded-full text-[12px] font-sans font-medium text-red-600 hover:bg-red-500/5 transition-all cursor-pointer disabled:opacity-50"
+            >
+              Delete all recordings
+            </button>
+          </div>
+
           {/* Sensitive-data Redaction Card */}
           <div className="card-style p-5 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
@@ -797,14 +1126,14 @@ export const Settings: React.FC = () => {
             </div>
           </div>
 
-          {/* Destructive Actions Card */}
+          {/* Legacy capture data (pre-frames) — one-time cleanup */}
           <div id="settings-clear-data" className="card-style p-5 flex flex-col gap-4 scroll-mt-6">
             <div className="flex flex-col gap-0.5">
               <span className="font-serif text-[17px] font-normal text-text-primary">
-                Clear Memory
+                Old capture data
               </span>
               <span className="font-sans text-[12px] text-text-faint">
-                Wipe some or all local screen history records
+                Clear the legacy text-only history from before the new encrypted visual memory. The new recordings are managed under “Screen recording” above.
               </span>
             </div>
 
@@ -853,6 +1182,32 @@ export const Settings: React.FC = () => {
               <RotateCcw size={13} strokeWidth={1.5} />
               Re-run onboarding
             </button>
+          </div>
+
+          {/* Start at login */}
+          <div className="card-style p-5 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="font-serif text-[17px] font-normal text-text-primary">
+                  Start Vera at login
+                </span>
+                <span className="font-sans text-[12px] text-text-muted leading-normal">
+                  Launch Vera automatically when you log in, so it's always quietly running in the menu bar.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autostartOn}
+                onChange={handleToggleAutostart}
+                disabled={autostartBusy}
+                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
+              />
+            </div>
+            {autostartError && (
+              <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl font-sans text-[12px] text-amber-700 leading-normal">
+                {autostartError}
+              </div>
+            )}
           </div>
         </div>
 

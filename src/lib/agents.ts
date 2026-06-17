@@ -1,5 +1,34 @@
 import { activityRepo, goalsRepo, notesRepo } from "./db";
-import { retrieveRelevantCaptures } from "./retrieval";
+import { retrieveRelevantFrames } from "./retrieval";
+
+// Shared visual-memory (frames) context + source chips for agents. Searches the
+// same encrypted index as the Ask bar; nothing decrypts here.
+async function buildFrameContext(query: string): Promise<{
+  frameCtx: string;
+  frameSources: { app_name: string; window_title: string | null; captured_at: number }[];
+}> {
+  const { hits, timeRange } = await retrieveRelevantFrames(query);
+  let frameCtx = `--- RELEVANT SCREEN FRAMES (visual memory${timeRange ? `, ${timeRange.label}` : ""}) ---\n`;
+  if (hits.length > 0) {
+    hits.forEach((h, idx) => {
+      const t = new Date(h.frame.timestamp).toLocaleTimeString();
+      frameCtx += `\n[Frame #${idx + 1}]
+Time: ${t}
+App: ${h.frame.app || "Unknown"}
+Window/Tab: ${h.frame.window_title || h.frame.url || "Unknown"}
+Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, 500)}"
+`;
+    });
+  } else {
+    frameCtx += "\nNo matching frames in visual memory.";
+  }
+  const frameSources = hits.map((h) => ({
+    app_name: h.frame.app || "Screen",
+    window_title: h.frame.window_title,
+    captured_at: h.frame.timestamp,
+  }));
+  return { frameCtx, frameSources };
+}
 
 export type AgentId = "planner" | "writer" | "researcher" | "coach";
 
@@ -167,33 +196,14 @@ export async function buildAgentContext(
       return { context: capContext(`${activity}\n\n${goalsNotes}`), sources: [] };
     }
     case "coach": {
-      return { context: capContext(await buildActivityContext(true)), sources: [] };
+      const base = await buildActivityContext(true);
+      const { frameCtx, frameSources } = await buildFrameContext(query);
+      return { context: capContext(`${base}\n\n${frameCtx}`), sources: frameSources };
     }
     case "researcher": {
-      // Same on-device semantic search as the Ask-bar
-      const captures = await retrieveRelevantCaptures(query);
-      let ctx = "--- RELEVANT SCREEN CAPTURES (the user's own data) ---\n";
-      if (captures.length > 0) {
-        captures.forEach((c, idx) => {
-          const timeStr = new Date(c.captured_at).toLocaleTimeString();
-          ctx += `\n[Capture #${idx + 1}]
-Time: ${timeStr}
-App: ${c.app_name}
-Window Title: ${c.window_title || "Unknown"}
-Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 700)}"
-`;
-        });
-      } else {
-        ctx += "\nNo matching screen captures found in memory.";
-      }
-      return {
-        context: capContext(ctx),
-        sources: captures.map((c) => ({
-          app_name: c.app_name,
-          window_title: c.window_title,
-          captured_at: c.captured_at,
-        })),
-      };
+      // Same on-device semantic search as the Ask-bar, over the visual memory.
+      const { frameCtx, frameSources } = await buildFrameContext(query);
+      return { context: capContext(frameCtx), sources: frameSources };
     }
     case "writer":
     default:

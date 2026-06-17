@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sparkle, ArrowUpRight, AlertTriangle, ExternalLink, RotateCcw } from "lucide-react";
 import { activityRepo, notesRepo, goalsRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
-import { retrieveRelevantCaptures } from "../lib/retrieval";
+import { retrieveRelevantFrames } from "../lib/retrieval";
 import { useUserProfile } from "../lib/useUserProfile";
 
 interface SourceReference {
@@ -12,12 +12,174 @@ interface SourceReference {
   captured_at: number;
 }
 
+interface FrameSource {
+  app: string | null;
+  window_title: string | null;
+  timestamp: number;
+  thumbnail_path: string | null;
+}
+
 interface HistoryEntry {
   id: string;
   query: string;
   reply: string;
   sources: SourceReference[];
+  frameSources?: FrameSource[];
+  thinkingSteps?: string[];
+  reasoning?: string;
+  visionReply?: string;
+  visionModel?: string;
+  visionBusy?: boolean;
 }
+
+// Vera is told to think out loud first, then write a line starting with
+// "ANSWER:" before its final reply. This splits a (possibly partial, mid-stream)
+// response into that self-talk and the answer. The marker is matched only at a
+// line start (tolerating markdown like ** or #) so prose such as "the answer is"
+// never trips it. Until the marker streams in, everything is reasoning; the
+// caller falls back to treating the whole text as the answer if it never comes.
+const ANSWER_MARKER = /(^|\n)[\s>*#-]*answer\s*\**\s*:\**/i;
+const splitReasoning = (raw: string): { reasoning: string; answer: string } => {
+  const match = raw.match(ANSWER_MARKER);
+  if (!match || match.index === undefined) {
+    return { reasoning: raw, answer: "" };
+  }
+  const markerEnd = match.index + match[0].length;
+  return {
+    reasoning: raw.slice(0, match.index).trim(),
+    answer: raw.slice(markerEnd).trim(),
+  };
+};
+
+// Collapsible panel showing Vera's REAL thinking for an answer: the retrieval
+// pipeline steps plus the model's own out-loud reasoning, streamed live.
+const ThinkingPanel: React.FC<{ steps: string[]; reasoning?: string; live: boolean }> = ({
+  steps,
+  reasoning,
+  live,
+}) => {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (live) setOpen(true);
+  }, [live]);
+  const reasoningText = (reasoning || "").trim();
+  const hasReasoning = reasoningText.length > 0;
+  const hasSteps = !!steps && steps.length > 0;
+  if (!hasSteps && !hasReasoning) return null;
+  const count = (steps?.length || 0) + (hasReasoning ? 1 : 0);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="self-start flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-wider font-semibold text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+      >
+        {live ? (
+          <span className="flex gap-1 items-center">
+            <span className="w-1 h-1 rounded-full bg-text-muted animate-pulse" />
+            Thinking
+          </span>
+        ) : (
+          <span>Thought process</span>
+        )}
+        <span className="text-text-faint normal-case tracking-normal">
+          {open ? "▾" : "▸"} {count}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 pl-3 border-l border-border-hairline">
+          {hasSteps && (
+            <ol className="flex flex-col gap-1">
+              {steps.map((s, i) => (
+                <li key={i} className="font-sans text-[11px] text-text-muted leading-snug">
+                  {s}
+                </li>
+              ))}
+            </ol>
+          )}
+          {hasReasoning && (
+            <p className="font-serif text-[12px] text-text-muted italic leading-relaxed whitespace-pre-wrap select-text">
+              {reasoningText}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// A cited frame from the visual memory: decrypts its thumbnail on demand (so the
+// store stays encrypted), shows the redaction-baked image, click to enlarge and
+// jump to that moment in the Timeline.
+const FrameThumbnail: React.FC<{ frame: FrameSource }> = ({ frame }) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [enlarged, setEnlarged] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (frame.thumbnail_path) {
+      invoke<string>("get_frame_thumbnail", { thumbnailPath: frame.thumbnail_path })
+        .then((url) => {
+          if (!cancelled) setSrc(url);
+        })
+        .catch((e) => console.error("Thumbnail decrypt failed:", e));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [frame.thumbnail_path]);
+
+  const timeStr = new Date(frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  if (!src) {
+    return <div className="w-[120px] h-[76px] rounded-lg bg-active-hover border border-border-hairline animate-pulse" />;
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setEnlarged(true)}
+        className="group flex flex-col gap-1 cursor-pointer text-left"
+        title={`${frame.app || "Screen"} — ${frame.window_title || ""} @ ${timeStr}`}
+      >
+        <img
+          src={src}
+          alt="captured frame"
+          className="w-[120px] h-[76px] object-cover rounded-lg border border-border-hairline group-hover:border-text-faint transition-colors"
+        />
+        <span className="text-[10px] text-text-faint truncate max-w-[120px]">
+          {frame.app || "Screen"} · {timeStr}
+        </span>
+      </button>
+      {enlarged && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-8"
+          onClick={() => setEnlarged(false)}
+        >
+          <div className="flex flex-col gap-3 items-center" onClick={(e) => e.stopPropagation()}>
+            <img src={src} alt="captured frame" className="max-w-[80vw] max-h-[70vh] rounded-xl border border-white/10" />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent("vera-open-timeline", { detail: frame.timestamp }));
+                  setEnlarged(false);
+                }}
+                className="px-3 py-1.5 rounded-full bg-white/10 text-white text-[12px] hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                Jump to Timeline
+              </button>
+              <button
+                onClick={() => setEnlarged(false)}
+                className="px-3 py-1.5 rounded-full bg-white/10 text-white text-[12px] hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
 
 const isGreeting = (text: string): boolean => {
   const clean = text.toLowerCase().trim().replace(/[?!.,]/g, "");
@@ -90,13 +252,27 @@ export const CommandBar: React.FC = () => {
   // Errors are surfaced in the answer area — no silent fallback to local.
   const runCloudCompletion = async (
     messages: { role: string; content: string }[],
-    queryId: string
+    queryId: string,
+    parseReasoning = false
   ) => {
     try {
-      const reply = await invoke<string>("generate_chat_completion", { messages });
-      setHistory((prev) =>
-        prev.map((item) => (item.id === queryId ? { ...item, reply } : item))
-      );
+      const raw = await invoke<string>("generate_chat_completion", { messages });
+      if (parseReasoning) {
+        // Cloud returns the whole response at once: split the out-loud reasoning
+        // from the final answer, falling back to the whole text if no marker.
+        const { reasoning, answer } = splitReasoning(raw);
+        setHistory((prev) =>
+          prev.map((item) =>
+            item.id === queryId
+              ? { ...item, reasoning: answer ? reasoning : "", reply: answer || raw.trim() }
+              : item
+          )
+        );
+      } else {
+        setHistory((prev) =>
+          prev.map((item) => (item.id === queryId ? { ...item, reply: raw } : item))
+        );
+      }
       await settingsRepo.setCloudLastStatus("ok");
     } catch (err: any) {
       const message = typeof err === "string" ? err : err?.message || String(err);
@@ -138,6 +314,72 @@ export const CommandBar: React.FC = () => {
     setHistory([]);
     shouldStickToBottomRef.current = true;
     inputRef.current?.focus();
+  };
+
+  // Append a live thinking step to an in-flight answer (reflects real progress).
+  const addStep = (id: string, step: string) => {
+    setHistory((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, thinkingSteps: [...(it.thinkingSteps || []), step] } : it))
+    );
+  };
+
+  // Optional, explicit vision pass: run a local vision model on the top few
+  // cited frames only. Off the normal hot path; clear fallback when unavailable.
+  const runVisionPass = async (entry: HistoryEntry) => {
+    if (!entry.frameSources || entry.frameSources.length === 0) return;
+    setHistory((prev) => prev.map((it) => (it.id === entry.id ? { ...it, visionBusy: true } : it)));
+    try {
+      const installed = await ollamaClient.listModels();
+      const visionModels = ollamaClient.visionModels(installed);
+      if (visionModels.length === 0) {
+        setHistory((prev) =>
+          prev.map((it) =>
+            it.id === entry.id
+              ? {
+                  ...it,
+                  visionBusy: false,
+                  visionReply:
+                    "No local vision model is installed. Install one (e.g. `ollama pull llava`) to analyze the frames visually — this answer is based on the extracted text only.",
+                }
+              : it
+          )
+        );
+        return;
+      }
+      const model = visionModels[0];
+      // Decrypt only the top few candidate thumbnails.
+      const frames = entry.frameSources.slice(0, 3);
+      const images: string[] = [];
+      for (const f of frames) {
+        if (!f.thumbnail_path) continue;
+        try {
+          const dataUrl = await invoke<string>("get_frame_thumbnail", { thumbnailPath: f.thumbnail_path });
+          const b64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
+          if (b64) images.push(b64);
+        } catch (e) {
+          console.error("Vision decrypt failed:", e);
+        }
+      }
+      if (images.length === 0) {
+        setHistory((prev) =>
+          prev.map((it) =>
+            it.id === entry.id ? { ...it, visionBusy: false, visionReply: "Could not decrypt the frames for visual analysis." } : it
+          )
+        );
+        return;
+      }
+      const prompt = `These are screenshots from the user's own screen. Answer their question concisely based on what is visible: ${entry.query}`;
+      const reply = await ollamaClient.visionAnswer(model, prompt, images);
+      setHistory((prev) =>
+        prev.map((it) => (it.id === entry.id ? { ...it, visionBusy: false, visionReply: reply, visionModel: model } : it))
+      );
+    } catch (err: any) {
+      setHistory((prev) =>
+        prev.map((it) =>
+          it.id === entry.id ? { ...it, visionBusy: false, visionReply: `Visual analysis failed: ${err.message || err}` } : it
+        )
+      );
+    }
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -226,6 +468,8 @@ export const CommandBar: React.FC = () => {
         return;
       }
 
+      addStep(queryId, "Searching your memory…");
+
       // Gather today's stats, top apps, timeline, goals, and notes
       const [stats, topApps, timeline, dailyGoal, notes] = await Promise.all([
         activityRepo.todayStats(),
@@ -235,20 +479,46 @@ export const CommandBar: React.FC = () => {
         notesRepo.list(),
       ]);
 
-      // Retrieve captures relevant to the query (semantic with LIKE fallback;
-      // shared with the Researcher agent, always on-device)
-      const relevantCaptures = await retrieveRelevantCaptures(query);
+      // Search the encrypted visual memory (frames): app-aware → semantic →
+      // keyword → (broad-only) recent. Only the index is read; nothing decrypts.
+      const { hits: frameHits, timeRange, scope, apps: queryApps } = await retrieveRelevantFrames(query);
 
-      // Update references / sources on entry
+      if (frameHits.length > 0) {
+        const apps = Array.from(new Set(frameHits.map((h) => h.frame.app).filter(Boolean))) as string[];
+        const range = timeRange ? ` (${timeRange.label})` : "";
+        if (scope === "app") {
+          addStep(
+            queryId,
+            `Found ${frameHits.length} distinct ${apps.join(", ") || "app"} page${frameHits.length > 1 ? "s" : ""}${range} in your recordings`
+          );
+        } else if (scope === "recent") {
+          const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          addStep(queryId, `No exact match — reviewing your ${frameHits.length} most recent frames${range}, near ${topTime}`);
+        } else {
+          const topTime = new Date(frameHits[0].frame.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          addStep(
+            queryId,
+            `Found ${frameHits.length} matching frame${frameHits.length > 1 ? "s" : ""}${range}${apps.length ? ` in ${apps.slice(0, 3).join(", ")}` : ""}, near ${topTime}`
+          );
+        }
+      } else if (scope === "none" && queryApps.length > 0) {
+        addStep(queryId, `No ${queryApps.join(", ")} frames in your recordings yet${timeRange ? ` for ${timeRange.label}` : ""}`);
+      } else {
+        addStep(queryId, `No matching frames${timeRange ? ` for ${timeRange.label}` : ""}; using your activity, notes & goals`);
+      }
+      addStep(queryId, "Reading the top matches and writing the answer…");
+
+      // Cite the frames (thumbnails shown under the answer).
       setHistory((prev) =>
         prev.map((item) =>
           item.id === queryId
             ? {
                 ...item,
-                sources: relevantCaptures.map((c) => ({
-                  app_name: c.app_name,
-                  window_title: c.window_title,
-                  captured_at: c.captured_at,
+                frameSources: frameHits.map((h) => ({
+                  app: h.frame.app,
+                  window_title: h.frame.window_title,
+                  timestamp: h.frame.timestamp,
+                  thumbnail_path: h.frame.thumbnail_path,
                 })),
               }
             : item
@@ -273,22 +543,31 @@ ${dailyGoal ? `- Goal: ${dailyGoal.title} (${dailyGoal.target_minutes} minutes t
 
 --- NOTES ---
 ${notes.map((n) => `- Title: "${n.title}"\n  Body: "${n.body || ""}"`).join("\n")}
-
---- RELEVANT SCREEN CAPTURES ---
 `;
 
-      if (relevantCaptures.length > 0) {
-        relevantCaptures.forEach((c, idx) => {
-          const timeStr = new Date(c.captured_at).toLocaleTimeString();
-          contextText += `\n[Capture #${idx + 1}]
-Time: ${timeStr}
-App: ${c.app_name}
-Window Title: ${c.window_title || "Unknown"}
-Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 800)}"
+      // Visual memory (frames) — the actual screen content, with timestamps the
+      // answer can cite. The matching thumbnails are shown under the answer.
+      contextText += `\n\n--- RELEVANT SCREEN FRAMES (visual memory${
+        timeRange ? `, filtered to ${timeRange.label}` : ""
+      }${scope === "app" && queryApps.length ? `, ${queryApps.join("/")} pages` : ""}) ---\n`;
+      if (frameHits.length > 0) {
+        // App-scoped results are distinct pages/windows: keep each entry compact
+        // (title + URL + a short snippet) so the model can list them all.
+        const snippetLen = scope === "app" ? 200 : 600;
+        frameHits.forEach((h, idx) => {
+          const t = new Date(h.frame.timestamp).toLocaleTimeString();
+          contextText += `\n[Frame #${idx + 1}]
+Time: ${t}
+App: ${h.frame.app || "Unknown"}
+Page/Window title: ${h.frame.window_title || "Unknown"}
+URL: ${h.frame.url || "Unknown"}
+Content: "${(h.frame.ocr_text || "").replace(/\n+/g, " ").substring(0, snippetLen)}"
 `;
         });
+      } else if (scope === "none" && queryApps.length > 0) {
+        contextText += `\nThere are NO recorded frames for ${queryApps.join(", ")}. Either it was not used while recording was on, recording was paused, or those frames have not been captured yet. Say this honestly; do not guess what was on screen.`;
       } else {
-        contextText += "\nNo matching screen captures found in memory.";
+        contextText += "\nNo matching frames in visual memory.";
       }
 
       // Trim context to max chars
@@ -296,15 +575,18 @@ Content: "${c.ocr_text.replace(/\n+/g, " ").substring(0, 800)}"
         contextText = contextText.substring(0, MAX_CONTEXT_CHARS) + "\n[...truncated]";
       }
 
-      const systemPrompt = `You are Vera, a local AI personal assistant. Your job is to answer questions about the user's day based on the context provided below. This is a conversation — the user may ask follow-up questions that refer to earlier answers.
-Rules:
-1. Ground your answers strictly in the context (which includes activity stats, top apps, notes, goals, and screen captures).
-2. Answer questions about what the user worked on or how long they spent in apps by looking at the "TODAY'S ACTIVITY STATS" and "TOP 5 APPS TODAY" sections. Do not assume you have no information if the captures list is empty; the activity stats and top apps represent real recorded history.
-3. Be concise, honest, and direct.
-4. If the answer cannot be found in the context (neither in stats, top apps, notes, nor captures), say "I don't have that in your data". Do not make things up.
-5. Keep the response to 1-3 sentences or a brief bullet list if possible.
-6. All inference is running locally. Never mention internal details like embeddings, cosine similarity, vectors, or database queries.
-7. When the user asks a follow-up ("and the second?", "summarize that", "are you sure?"), use the conversation history to understand what they are referring to.`;
+      const systemPrompt = `You are Vera, a local AI personal assistant. Answer questions about the user's day based ONLY on the context provided below. This is a conversation — the user may ask follow-ups that refer to earlier answers.
+
+THINK OUT LOUD FIRST. Before answering, reason through the problem step by step, in the first person, like you are talking to yourself. Restate what the user is really asking. Walk through the context — the activity stats, top apps, notes, goals, and especially the screen frames (each has a time, an app, a window/tab, and the text content that was on screen). Name the specific frames, apps, and times you are leaning on ("The frame at 14:32 in Chrome shows…", "So that tells me…"), weigh what is relevant, and reason toward a conclusion. Be concrete — quote what you actually see in the context.
+
+Then, on a NEW LINE, write exactly "ANSWER:" and give your final reply.
+
+Rules for the final answer:
+1. Ground it strictly in the context. The "TODAY'S ACTIVITY STATS" and "TOP 5 APPS TODAY" sections are real recorded history — never claim you have no information just because the frames list is short.
+2. Be concise, honest, and direct: 1-3 sentences or a short bullet list.
+3. If the answer genuinely is not in the context (not in stats, top apps, notes, goals, nor frames), say "I don't have that in your data." Do not make things up.
+4. Use the conversation history to resolve follow-ups ("and the second?", "summarize that", "are you sure?").
+5. All inference runs locally. Never mention internal mechanics like embeddings, cosine similarity, vectors, or database queries.`;
 
       // Build the full message array: system + history + new user message
       const conversationHistory = buildConversationHistory(historySnapshot);
@@ -314,17 +596,32 @@ Rules:
         { role: "user", content: query },
       ];
 
-      // Generate the answer with the configured engine (retrieval stayed local)
+      // Generate the answer with the configured engine (retrieval stayed local).
+      // Vera reasons out loud first; we stream that self-talk into the thinking
+      // panel and the final answer into the reply as the marker arrives.
       if (engine === "cloud") {
-        await runCloudCompletion(messages, queryId);
+        await runCloudCompletion(messages, queryId, true);
       } else {
+        let raw = "";
         await ollamaClient.chatStream(chatModel, messages, (chunk) => {
+          raw += chunk;
+          const { reasoning, answer } = splitReasoning(raw);
           setHistory((prev) =>
             prev.map((item) =>
-              item.id === queryId ? { ...item, reply: item.reply + chunk } : item
+              item.id === queryId ? { ...item, reasoning, reply: answer } : item
             )
           );
         });
+        // Stream finished: if the model never emitted an "ANSWER:" marker, treat
+        // its whole response as the answer so the user always sees a reply.
+        const { answer } = splitReasoning(raw);
+        if (!answer) {
+          setHistory((prev) =>
+            prev.map((item) =>
+              item.id === queryId ? { ...item, reasoning: "", reply: raw.trim() } : item
+            )
+          );
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -468,6 +765,15 @@ Rules:
                         Vera
                       </span>
 
+                      {((item.thinkingSteps && item.thinkingSteps.length > 0) ||
+                        (item.reasoning && item.reasoning.trim())) && (
+                        <ThinkingPanel
+                          steps={item.thinkingSteps || []}
+                          reasoning={item.reasoning}
+                          live={isLoading && idx === history.length - 1 && !item.reply}
+                        />
+                      )}
+
                       {item.reply ? (
                         <p className="font-serif text-[16px] text-text-muted italic leading-relaxed select-text whitespace-pre-wrap">
                           {item.reply}
@@ -504,6 +810,49 @@ Rules:
                               );
                             })}
                           </div>
+                        </div>
+                      )}
+
+                      {/* Cited frames from the visual memory (decrypted on demand) */}
+                      {item.frameSources && item.frameSources.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          <span className="font-sans text-[10px] text-text-faint uppercase tracking-wider font-semibold">
+                            From your screen
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {item.frameSources.map((fs, i) => (
+                              <FrameThumbnail key={i} frame={fs} />
+                            ))}
+                          </div>
+
+                          {/* Optional, explicit vision pass over the cited frames */}
+                          {item.reply && (
+                            <div className="mt-1 flex flex-col gap-2">
+                              {!item.visionReply && !item.visionBusy && (
+                                <button
+                                  onClick={() => runVisionPass(item)}
+                                  className="self-start font-sans text-[11px] px-2.5 py-1 rounded-full border border-border-hairline text-text-muted hover:text-text-primary hover:bg-active-hover transition-colors cursor-pointer"
+                                >
+                                  Look at the frames (vision)
+                                </button>
+                              )}
+                              {item.visionBusy && (
+                                <span className="font-sans text-[11px] text-text-faint italic">
+                                  Analyzing the frames visually…
+                                </span>
+                              )}
+                              {item.visionReply && (
+                                <div className="flex flex-col gap-1 p-3 rounded-xl bg-active-hover/50 border border-border-hairline">
+                                  <span className="font-sans text-[10px] text-text-faint uppercase tracking-wider font-semibold">
+                                    Visual analysis{item.visionModel ? ` · ${item.visionModel}` : ""}
+                                  </span>
+                                  <p className="font-sans text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap select-text">
+                                    {item.visionReply}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

@@ -2,15 +2,31 @@ import React, { useState, useEffect } from "react";
 import { Clock, Eye, ChevronDown, ChevronUp } from "lucide-react";
 import {
   activityRepo,
-  capturesRepo,
+  framesRepo,
   formatHoursMinutes,
   DbActivityEvent,
   DbCapture,
+  DbFrame,
 } from "../lib/db";
 
 type TimelineItem =
   | { kind: "activity"; time: number; event: DbActivityEvent }
   | { kind: "capture"; time: number; capture: DbCapture };
+
+// The Timeline now reads the visual memory (frames); map to the row shape it
+// already renders.
+function frameToCapture(f: DbFrame): DbCapture {
+  const text = f.ocr_text || "";
+  return {
+    id: f.id,
+    captured_at: f.timestamp,
+    app_name: f.app || "Screen",
+    window_title: f.window_title,
+    ocr_text: text,
+    char_count: text.length,
+    embedding: f.embedding,
+  };
+}
 
 interface HourGroup {
   hour: number;
@@ -77,14 +93,14 @@ export const Timeline: React.FC = () => {
     try {
       const start = dayMs;
       const end = nextDay(dayMs);
-      const [events, captures] = await Promise.all([
+      const [events, frames] = await Promise.all([
         activityRepo.eventsForDay(start, end),
-        capturesRepo.forDay(start, end),
+        framesRepo.forDay(start, end),
       ]);
 
       const items: TimelineItem[] = [
         ...events.map((e) => ({ kind: "activity" as const, time: e.started_at, event: e })),
-        ...captures.map((c) => ({ kind: "capture" as const, time: c.captured_at, capture: c })),
+        ...frames.map((f) => ({ kind: "capture" as const, time: f.timestamp, capture: frameToCapture(f) })),
       ];
 
       // Reverse-chronological so the freshest moments are at the top and the

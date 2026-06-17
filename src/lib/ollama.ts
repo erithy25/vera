@@ -164,5 +164,47 @@ export const ollamaClient = {
     }
 
     return fullResponse;
-  }
+  },
+
+  // Local vision-capable models the user has installed (Ollama multimodal).
+  visionModels(installed: string[]): string[] {
+    const known = [
+      "llava",
+      "llama3.2-vision",
+      "llama3.1-vision",
+      "moondream",
+      "bakllava",
+      "minicpm-v",
+      "llava-llama3",
+      "llava-phi3",
+      "qwen2-vl",
+      "qwen2.5vl",
+      "gemma3",
+    ];
+    return installed.filter((m) => {
+      const lower = m.toLowerCase();
+      return known.some((k) => lower.startsWith(k) || lower.includes(k));
+    });
+  },
+
+  // One-shot multimodal answer over a few base64 images (no streaming). Used by
+  // the optional, explicit vision pass — kept off the normal hot path.
+  async visionAnswer(model: string, prompt: string, imagesBase64: string[]): Promise<string> {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt, images: imagesBase64 }],
+        stream: false,
+        options: { temperature: 0.2 },
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`Vision request failed: ${res.statusText} - ${t}`);
+    }
+    const json = await res.json();
+    return json.message?.content || "";
+  },
 };

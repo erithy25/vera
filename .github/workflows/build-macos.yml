@@ -1,0 +1,42 @@
+name: Build Vera (macOS)
+
+# Manual-only build verification on a real Apple Silicon Mac (unsigned). Run it
+# from the Actions tab when you want to confirm the native stack still compiles.
+# It does NOT run automatically on push, so normal pushes cost nothing.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Toolchain versions
+        run: |
+          node --version
+          rustc --version || true
+          swiftc --version || true
+          xcodebuild -version || true
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Tauri app (unsigned)
+        run: npm run tauri build
+
+      - name: Upload DMG artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vera-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

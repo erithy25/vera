@@ -8,10 +8,11 @@ import { Agents } from "./components/Agents";
 import { Goals } from "./components/Goals";
 import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
-import { seedDatabaseIfEmpty, initializeDefaultSettings, pruneOldCaptures, activityRepo, capturesRepo, getDb, settingsRepo } from "./lib/db";
+import { UpdateChecker } from "./components/UpdateChecker";
+import { seedDatabaseIfEmpty, initializeDefaultSettings, framesRepo, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { ollamaClient } from "./lib/ollama";
-import { tokenSimilarity } from "./lib/textSimilarity";
 
 async function backfillEmbeddings() {
   try {
@@ -28,51 +29,40 @@ async function backfillEmbeddings() {
       return;
     }
 
-    const db = await getDb();
-    const unencoded = await db.select<any[]>(
-      "SELECT id, ocr_text FROM captures WHERE (embedding IS NULL OR embedding = '') AND ocr_text != '' ORDER BY captured_at DESC LIMIT 100"
-    );
-
-    if (unencoded.length === 0) {
-      return;
-    }
-
-    console.log(`[Vera AI] Backfilling embeddings for ${unencoded.length} captures...`);
-    for (const row of unencoded) {
-      try {
-        const text = row.ocr_text.trim();
-        if (text) {
-          const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-          await capturesRepo.updateEmbedding(row.id, vector);
+    // Backfill embeddings for the visual memory (frames) so they are searchable.
+    const framesToEmbed = await framesRepo.needingEmbeddings(100);
+    if (framesToEmbed.length > 0) {
+      console.log(`[Vera AI] Backfilling embeddings for ${framesToEmbed.length} frames...`);
+      for (const f of framesToEmbed) {
+        try {
+          const text = (f.ocr_text || "").trim();
+          if (text) {
+            const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
+            await framesRepo.updateEmbedding(f.id, vector);
+          }
+        } catch (err) {
+          console.error(`[Vera AI] Failed to embed frame ${f.id}:`, err);
+          break;
         }
-      } catch (err) {
-        console.error(`[Vera AI] Failed to generate embedding for capture ${row.id}:`, err);
-        break;
       }
     }
+
     console.log("[Vera AI] Embedding backfill batch completed.");
   } catch (err) {
     console.error("[Vera AI] Error during backfill:", err);
   }
 }
 
-async function handleNewCaptureEmbedding(captureId: number, ocrText: string) {
+// Backend persists captures (without embeddings); the frontend encodes new ones
+// when the window is open. Guarded so backfills never overlap.
+let embeddingBackfillRunning = false;
+async function runEmbeddingBackfill() {
+  if (embeddingBackfillRunning) return;
+  embeddingBackfillRunning = true;
   try {
-    const isOnline = await ollamaClient.isRunning();
-    if (!isOnline) return;
-
-    const embeddingModel = await settingsRepo.getEmbeddingModel();
-    const models = await ollamaClient.listModels();
-    if (!models.includes(embeddingModel) && !models.includes(`${embeddingModel}:latest`)) return;
-
-    const text = ocrText.trim();
-    if (text) {
-      const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-      await capturesRepo.updateEmbedding(captureId, vector);
-      console.log(`[Vera AI] Generated and saved embedding for capture ${captureId}`);
-    }
-  } catch (err) {
-    console.error(`[Vera AI] Failed to generate embedding for capture ${captureId}:`, err);
+    await backfillEmbeddings();
+  } finally {
+    embeddingBackfillRunning = false;
   }
 }
 
@@ -86,7 +76,6 @@ function App() {
       try {
         await seedDatabaseIfEmpty();
         await initializeDefaultSettings();
-        await pruneOldCaptures();
         try {
           setOnboardingComplete(await settingsRepo.getOnboardingComplete());
         } catch (err) {
@@ -95,6 +84,15 @@ function App() {
         setDbReady(true);
         // Run embedding backfill in background
         backfillEmbeddings();
+        // If screen recording is on, unlock the encrypted media store (Touch ID)
+        // so backend capture can resume. Failure leaves recording locked, not broken.
+        try {
+          if (await settingsRepo.getFramesCaptureEnabled()) {
+            await invoke("vault_unlock");
+          }
+        } catch (err) {
+          console.error("Recording store stayed locked (Touch ID declined):", err);
+        }
       } catch (err) {
         console.error("Vera Database initialization failed:", err);
         // Fall back to ready state so the UI still displays even if DB fails
@@ -118,75 +116,68 @@ function App() {
     return () => window.removeEventListener("vera-open-agent", openAgents);
   }, []);
 
-  // Set up activity segment event listener and auto-refresh intervals
+  // "Jump to Timeline" from a cited frame thumbnail switches to the Timeline view
   useEffect(() => {
-    let unlistenActivity: (() => void) | null = null;
-    let unlistenCapture: (() => void) | null = null;
+    const openTimeline = () => setCurrentView("Timeline");
+    window.addEventListener("vera-open-timeline", openTimeline);
+    return () => window.removeEventListener("vera-open-timeline", openTimeline);
+  }, []);
+
+  // The backend now writes captures/activity to SQLite directly (so capture
+  // survives the window being hidden/closed). The frontend just refreshes the
+  // UI, backfills embeddings for new captures, surfaces permission issues, and
+  // mirrors tray-driven pause/resume into the in-app state.
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
 
     async function setupListeners() {
       try {
-        unlistenActivity = await listen<any>("activity-segment", async (event) => {
-          try {
-            await activityRepo.insertEvent(event.payload);
+        unlisteners.push(
+          await listen("activity-stored", () => {
             window.dispatchEvent(new CustomEvent("activity-updated"));
-          } catch (err) {
-            console.error("Failed to insert tracked segment:", err);
-          }
-        });
-      } catch (err) {
-        console.error("Failed to setup activity segment listener:", err);
-      }
-
-      try {
-        unlistenCapture = await listen<any>("screen-capture", async (event) => {
-          try {
-            const { app_name, window_title, ocr_text, char_count, status } = event.payload;
-            // Quality gates (mirror the backend): substantive content only,
-            // and no near-duplicate of any of the recent captures (catches
-            // recurring banners/dialogs that pop over several apps)
-            if (status === "Success" && char_count >= 64) {
-              const recent = await capturesRepo.recent(15);
-              const isDuplicate = recent.some(
-                (c) => tokenSimilarity(c.ocr_text, ocr_text) > 0.85
-              );
-              if (isDuplicate) {
-                return;
-              }
-              const insertId = await capturesRepo.insert({
-                app_name,
-                window_title,
-                ocr_text,
-                char_count,
-              });
-              window.dispatchEvent(new CustomEvent("captures-updated"));
-              // Asynchronously generate and save embedding vector
-              handleNewCaptureEmbedding(insertId, ocr_text);
-            } else if (status === "PermissionRequired") {
+          })
+        );
+        unlisteners.push(
+          await listen("capture-stored", () => {
+            window.dispatchEvent(new CustomEvent("captures-updated"));
+            runEmbeddingBackfill();
+          })
+        );
+        unlisteners.push(
+          await listen("frame-stored", () => {
+            // New visual-memory frame stored — refresh views and index it for search.
+            window.dispatchEvent(new CustomEvent("captures-updated"));
+            runEmbeddingBackfill();
+          })
+        );
+        unlisteners.push(
+          await listen<any>("screen-capture", (event) => {
+            if (event.payload?.status === "PermissionRequired") {
               window.dispatchEvent(new CustomEvent("capture-permission-missing"));
             }
-          } catch (err) {
-            console.error("Failed to insert screen capture segment:", err);
-          }
-        });
+          })
+        );
+        unlisteners.push(
+          await listen<boolean>("capture-paused-changed", (event) => {
+            window.dispatchEvent(
+              new CustomEvent("capture-paused-updated", { detail: event.payload })
+            );
+          })
+        );
       } catch (err) {
-        console.error("Failed to setup screen capture listener:", err);
+        console.error("Failed to set up capture/activity listeners:", err);
       }
     }
 
     setupListeners();
 
-    // 30s auto-refresh interval
+    // 30s auto-refresh interval (UI only)
     const refreshInterval = setInterval(() => {
       window.dispatchEvent(new CustomEvent("activity-updated"));
     }, 30000);
 
     return () => {
-      if (unlistenActivity) {
-        unlistenActivity();
-      }
-      if (unlistenCapture) {
-        unlistenCapture();
-      }
+      unlisteners.forEach((un) => un());
       clearInterval(refreshInterval);
     };
   }, []);
@@ -237,6 +228,9 @@ function App() {
           )}
         </main>
       </div>
+
+      {/* Auto-update prompt (shows only when a newer version is published) */}
+      <UpdateChecker />
     </div>
   );
 }

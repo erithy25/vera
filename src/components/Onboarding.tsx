@@ -13,6 +13,7 @@ import {
   Cloud,
 } from "lucide-react";
 import { settingsRepo } from "../lib/db";
+import { enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { ollamaClient } from "../lib/ollama";
 
 interface OnboardingProps {
@@ -40,6 +41,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [screenRecording, setScreenRecording] = useState<PermissionState>("unknown");
   const [ollamaOnline, setOllamaOnline] = useState<boolean>(false);
   const [nameInput, setNameInput] = useState("");
+  const [startAtLogin, setStartAtLogin] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -108,6 +110,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       if (name) {
         await settingsRepo.setUserName(name);
         window.dispatchEvent(new CustomEvent("profile-updated"));
+      }
+      if (startAtLogin) {
+        try {
+          await enableAutostart();
+          await settingsRepo.setAutostartEnabled(await isAutostartEnabled());
+        } catch (err) {
+          console.error("Failed to enable start-at-login:", err);
+        }
       }
       await settingsRepo.setOnboardingComplete(true);
     } catch (err) {
@@ -312,6 +322,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 className="w-full px-5 py-4 bg-card-surface border border-border-hairline rounded-[16px] font-serif text-[22px] text-text-primary outline-none placeholder:text-text-muted placeholder:italic focus:border-text-muted/80 transition-all"
               />
             </form>
+
+            {/* Optional: start at login */}
+            <label className="card-style p-4 flex items-start justify-between gap-4 cursor-pointer">
+              <div className="flex flex-col gap-1">
+                <span className="font-sans text-[14px] font-medium text-text-primary">
+                  Start Vera automatically at login <span className="text-text-faint font-normal">(recommended)</span>
+                </span>
+                <span className="font-sans text-[12px] text-text-muted leading-normal">
+                  Vera runs quietly in the menu bar so it's always remembering your day. You can change this later in Settings.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={startAtLogin}
+                onChange={(e) => setStartAtLogin(e.target.checked)}
+                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline shrink-0"
+              />
+            </label>
           </div>
         )}
 
