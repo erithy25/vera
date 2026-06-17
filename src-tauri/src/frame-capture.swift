@@ -73,6 +73,7 @@ struct Args {
     var segmentSeconds: Double = 600
     var thumbWidth: Int = 320
     var maxFramesPerSegment: Int = 5000
+    var probe: Bool = false
 }
 
 func parseArgs() -> Args {
@@ -98,6 +99,7 @@ func parseArgs() -> Args {
                     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                     .filter { !$0.isEmpty }
             }
+        case "--probe": args.probe = true
         default: break
         }
         i += 1
@@ -106,6 +108,17 @@ func parseArgs() -> Args {
 }
 
 let options = parseArgs()
+
+// Probe mode: report screen-recording permission via the exit code (0 = granted,
+// 3 = not), then quit. The supervisor runs this as a fresh child because the
+// main app process caches its own preflight result until relaunch. It only
+// PREFLIGHTS — it never prompts — so it registers no permission entry of its own.
+if options.probe {
+    if #available(macOS 10.15, *) {
+        exit(CGPreflightScreenCaptureAccess() ? 0 : 3)
+    }
+    exit(0)
+}
 
 if options.outDir.isEmpty {
     emitStatus("Error", error: "Missing --out-dir")

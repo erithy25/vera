@@ -1220,6 +1220,21 @@ fn spawn_frame_sidecar(app: &tauri::AppHandle, helper: &Path) -> Result<std::pro
     Ok(child)
 }
 
+/// Fresh-process screen-recording permission probe (exit 0 = granted). The
+/// supervisor uses this because the main process caches its own
+/// CGPreflightScreenCaptureAccess result until relaunch, while a freshly spawned
+/// child sees the current TCC state. `--probe` only preflights — it never
+/// prompts — so it registers no permission entry of its own.
+fn probe_screen_capture(helper: &Path) -> bool {
+    std::process::Command::new(helper)
+        .arg("--probe")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Long-lived supervisor: reconciles the sidecar with the enabled/paused/
 /// permission state every couple of seconds. Never panics.
 fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
@@ -1282,8 +1297,18 @@ fn frame_supervisor_loop(app: tauri::AppHandle, helper: Option<PathBuf>) {
         };
 
         if want && !running {
-            // Degrade gracefully if screen recording permission is missing.
-            if !unsafe { ffi_check_screen_recording_permission() } {
+            // The main process caches CGPreflightScreenCaptureAccess until the
+            // app is relaunched, so a just-granted permission can still read
+            // false here — which would leave capture dead until a manual restart.
+            // If the cached check says no, confirm with a fresh probe process
+            // (which sees the current TCC state) every ~10s before giving up, so
+            // capture self-heals right after the user grants it. The probe only
+            // preflights (never prompts), so it adds no permission entry.
+            let mut granted = unsafe { ffi_check_screen_recording_permission() };
+            if !granted && ticks % 5 == 0 {
+                granted = probe_screen_capture(&helper);
+            }
+            if !granted {
                 if !warned_permission {
                     eprintln!("[Vera Frames] screen recording permission not granted; will retry");
                     warned_permission = true;
