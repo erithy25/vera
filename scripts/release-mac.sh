@@ -68,6 +68,13 @@ fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
 console.log("Patched tauri.conf.json updater config.");
 ' "$PUBKEY" "$UPDATER_ENDPOINT"
 
+# Detach any stale "Vera" disk images first, so the DMG bundler does not fail
+# with a "device busy" / leftover-mount error. Safe no-op when none are mounted
+# (bash leaves the unmatched glob literal, which "-d" then rejects).
+for vol in /Volumes/Vera*; do
+  [ -d "$vol" ] && hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+done
+
 echo "==> Building, signing, notarizing and updater-signing Vera (several minutes)."
 npm install
 npm run tauri build
