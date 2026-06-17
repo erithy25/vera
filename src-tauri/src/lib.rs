@@ -218,8 +218,22 @@ fn request_accessibility_permission() -> bool {
 }
 
 #[tauri::command]
-fn has_screen_recording_permission() -> bool {
-    unsafe { ffi_check_screen_recording_permission() }
+fn has_screen_recording_permission(app: tauri::AppHandle) -> bool {
+    if unsafe { ffi_check_screen_recording_permission() } {
+        return true;
+    }
+    // The main process freezes its CGPreflightScreenCaptureAccess result until
+    // relaunch, so a just-granted permission still reads false above — which is
+    // why the card kept showing NOT GRANTED right after enabling it. Confirm
+    // with a fresh probe child (which sees the current TCC state) so REFRESH
+    // reflects the grant immediately, without quitting and reopening the app.
+    match app
+        .path()
+        .resolve("binaries/frame-capture", tauri::path::BaseDirectory::Resource)
+    {
+        Ok(helper) => probe_screen_capture(&helper),
+        Err(_) => false,
+    }
 }
 
 #[tauri::command]
