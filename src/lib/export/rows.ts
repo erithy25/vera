@@ -3,6 +3,7 @@
 // Pure: no DB imports, replica-tested.
 
 import { ExportRow } from "./types";
+import { effectiveRateCents, amountCents } from "../billing-core";
 
 export interface EntryLike {
   id: number;
@@ -23,25 +24,22 @@ export interface ProjectLike {
   client_rate_cents: number | null;
 }
 
-/** rounded_minutes × €/h, kaufmännisch to whole cents. */
-export function amountCents(roundedMinutes: number, rateCents: number): number {
-  return Math.round((roundedMinutes / 60) * rateCents);
-}
-
 /**
  * Only confirmed/exported entries become export rows — drafts are not
  * billing yet. Rows are sorted by date, then client, then project, so every
  * adapter emits a stable, diff-friendly file.
  */
 export function buildExportRows(entries: EntryLike[], projects: ProjectLike[]): ExportRow[] {
+  const byId = new Map(projects.map((p) => [p.id, p]));
   const rows: ExportRow[] = [];
   for (const e of entries) {
     if (e.status !== "confirmed" && e.status !== "exported") continue;
-    const p = projects.find((x) => x.id === e.project_id);
+    const p = byId.get(e.project_id);
     if (!p) continue; // project row gone (never happens: projects are archive-only)
     const billable = !!p.billable;
-    const rate = billable ? (p.hourly_rate_cents ?? p.client_rate_cents) : null;
+    const rate = effectiveRateCents(p);
     rows.push({
+      id: e.id,
       entry_date: e.entry_date,
       client: p.client_name,
       project: p.name,

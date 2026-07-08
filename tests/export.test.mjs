@@ -46,6 +46,12 @@ check("buildExportRows: drafts excluded, sorted by date/client/project", () => {
   );
 });
 
+check("buildExportRows: each row carries its source entry id (structural mark set)", () => {
+  assert.deepStrictEqual(rows.map((r) => r.id).sort((a, b) => a - b), [1, 2, 3, 4]);
+  // The draft (id 5) is absent, so it can never be marked exported.
+  assert.ok(!rows.some((r) => r.id === 5));
+});
+
 check("buildExportRows: rate fallback project→client, non-billable and unpriced have null amounts", () => {
   const relaunch = rows.find((r) => r.project === "Relaunch");
   assert.equal(relaunch.rate_cents, 12000); // project rate wins

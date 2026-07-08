@@ -682,6 +682,20 @@ export const blocksRepo = {
     return rows[0]?.n ?? 0;
   },
 
+  // Slim projection for the recovered-time metric — only the three columns it
+  // needs, and only confirmed rows, so a month view doesn't ship every
+  // block's evidence JSON across the IPC bridge.
+  async confirmedInRange(
+    startMs: number,
+    endMs: number
+  ): Promise<{ started_at: number; ended_at: number; status: string }[]> {
+    const db = await getDb();
+    return db.select(
+      "SELECT started_at, ended_at, status FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND status = 'confirmed'",
+      [startMs, endMs]
+    );
+  },
+
   // Returns false when the row no longer exists (e.g. replaced by a recompute
   // while the picker was open) — callers must not record feedback then.
   async assignProject(id: number, projectId: number | null): Promise<boolean> {

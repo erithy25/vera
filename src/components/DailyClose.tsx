@@ -21,6 +21,7 @@ import {
 } from "../lib/db";
 import { generateEntriesForDay, regenerateNarrative } from "../lib/narratives";
 import { entryDateOf } from "../lib/narrative-core";
+import { effectiveRateCents, amountCents } from "../lib/billing-core";
 import {
   nextDayStart,
   formatDayLabel,
@@ -87,13 +88,12 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
   // are deliberate and must not be counted as "missing a rate".
   const rateCentsOf = (id: number): number | null => {
     const p = projectOf(id);
-    if (!p || !p.billable) return null;
-    return p.hourly_rate_cents ?? p.client_rate_cents;
+    return p ? effectiveRateCents(p) : null;
   };
   const isBillable = (id: number): boolean => projectOf(id)?.billable === 1;
   const centsFor = (e: DbTimeEntry): number | null => {
     const rate = rateCentsOf(e.project_id);
-    return rate === null ? null : Math.round((e.rounded_minutes / 60) * rate);
+    return rate === null ? null : amountCents(e.rounded_minutes, rate);
   };
 
   // Every block write is announced so the TopBar anchor (and DayView behind

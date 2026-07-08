@@ -3,24 +3,24 @@
 // No Tauri/DB imports — replica-tested via npm run test:reports.
 
 import { dayStartOf, nextDayStart } from "./format";
+import { effectiveRateCents, amountCents } from "./billing-core";
 
 // ---------- Calendar ranges (DST-safe via Date arithmetic) ----------
 
 export type ReportRange = { startMs: number; endMs: number }; // [start, end)
 
 /** Monday 00:00 of the week containing ms. */
-export function weekStartOf(ms: number): number {
-  let day = dayStartOf(ms);
-  // getDay(): 0 = Sunday … 6 = Saturday; walk back to Monday.
-  let steps = (new Date(day).getDay() + 6) % 7;
-  while (steps-- > 0) {
-    day = dayStartOf(day - 1); // previous day, robust across DST
-  }
-  return day;
+function weekStartOf(ms: number): number {
+  const d = new Date(dayStartOf(ms));
+  // getDay(): 0 = Sunday … 6 = Saturday; walk back to Monday. setDate keeps
+  // local midnight across DST (unlike raw ±ms arithmetic).
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
 /** First-of-month 00:00 of the month containing ms. */
-export function monthStartOf(ms: number): number {
+function monthStartOf(ms: number): number {
   const d = new Date(dayStartOf(ms));
   return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
 }
@@ -40,11 +40,12 @@ export function monthRangeOf(ms: number): ReportRange {
 
 /** The same range shifted one period back/forward (delta = ±1). */
 export function shiftRange(range: ReportRange, mode: "week" | "month", delta: number): ReportRange {
-  const anchor =
-    mode === "week"
-      ? range.startMs + delta * 7 * 86_400_000 + 43_200_000 // mid-day safety offset
-      : new Date(new Date(range.startMs).getFullYear(), new Date(range.startMs).getMonth() + delta, 15).getTime();
-  return mode === "week" ? weekRangeOf(anchor) : monthRangeOf(anchor);
+  const d = new Date(range.startMs);
+  if (mode === "week") {
+    d.setDate(d.getDate() + delta * 7); // setDate keeps local midnight through DST
+    return weekRangeOf(d.getTime());
+  }
+  return monthRangeOf(new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime());
 }
 
 // ---------- Aggregation over time entries ----------
@@ -83,9 +84,6 @@ export interface ReportTotals {
   utilization: number | null; // billable share of confirmed time, 0..1; null when no time
 }
 
-const effectiveRate = (p: ReportProjectLike): number | null =>
-  p.billable ? (p.hourly_rate_cents ?? p.client_rate_cents) : null;
-
 /** Per-client rows (sorted by value, then minutes) + range totals. Draft entries are ignored. */
 export function aggregateEntries(
   entries: ReportEntryLike[],
@@ -101,12 +99,13 @@ export function aggregateEntries(
     utilization: null,
   };
 
+  const byId = new Map(projects.map((p) => [p.id, p]));
   for (const e of entries) {
     if (e.status !== "confirmed" && e.status !== "exported") continue;
-    const p = projects.find((x) => x.id === e.project_id);
+    const p = byId.get(e.project_id);
     if (!p) continue;
-    const rate = effectiveRate(p);
-    const cents = rate === null ? 0 : Math.round((e.rounded_minutes / 60) * rate);
+    const rate = effectiveRateCents(p);
+    const cents = rate === null ? 0 : amountCents(e.rounded_minutes, rate);
 
     const row = byClient.get(p.client_id) ?? {
       client_id: p.client_id,
@@ -140,14 +139,15 @@ export function aggregateEntries(
 
 // ---------- Recovered time (the headline metric) ----------
 
-export const RECOVERED_SHORT_BLOCK_MS = 15 * 60_000;
-export const WORK_WINDOW_START_HOUR = 8; // 08:00 local
-export const WORK_WINDOW_END_HOUR = 18; // 18:00 local
+const RECOVERED_SHORT_BLOCK_MS = 15 * 60_000;
+const WORK_WINDOW_START_HOUR = 8; // 08:00 local
+const WORK_WINDOW_END_HOUR = 18; // 18:00 local
 
 /** Shown verbatim in the report — the metric is only credible if its definition is. */
 export const RECOVERED_TIME_DEFINITION =
-  "Confirmed work in blocks under 15 minutes, plus confirmed work outside " +
-  "08:00–18:00 — the time manual timesheets typically lose. Counted once per block.";
+  "Confirmed work that manual timesheets typically lose: blocks under 15 minutes " +
+  "(counted in full), plus the part of longer blocks worked outside 08:00–18:00. " +
+  "Each block counts once.";
 
 export interface RecoveredBlockLike {
   started_at: number;
@@ -156,9 +156,29 @@ export interface RecoveredBlockLike {
 }
 
 /**
+ * Milliseconds a block overlaps the daily 08:00–18:00 work window. Iterates
+ * day by day so blocks crossing midnight (and DST days) are handled exactly.
+ */
+function insideWorkWindowMs(start: number, end: number): number {
+  let inside = 0;
+  let cursor = dayStartOf(start);
+  while (cursor < end) {
+    const d = new Date(cursor);
+    const winStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), WORK_WINDOW_START_HOUR).getTime();
+    const winEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate(), WORK_WINDOW_END_HOUR).getTime();
+    const lo = Math.max(start, winStart);
+    const hi = Math.min(end, winEnd);
+    if (hi > lo) inside += hi - lo;
+    cursor = nextDayStart(cursor);
+  }
+  return inside;
+}
+
+/**
  * Milliseconds of confirmed block time that manual tracking typically loses:
- * short fragments (< 15 min) and work outside the 08:00–18:00 window. A
- * block matching both counts once.
+ * short fragments (< 15 min) counted in full, plus — for longer blocks — only
+ * the portion worked outside the 08:00–18:00 window (never the whole block).
+ * A block is either short (full) or long (out-of-window part), so it counts once.
  */
 export function recoveredTimeMs(blocks: RecoveredBlockLike[]): number {
   let ms = 0;
@@ -167,17 +187,10 @@ export function recoveredTimeMs(blocks: RecoveredBlockLike[]): number {
     const duration = b.ended_at - b.started_at;
     if (duration <= 0) continue;
     if (duration < RECOVERED_SHORT_BLOCK_MS) {
-      ms += duration;
-      continue;
+      ms += duration; // a short fragment is forgettable in full
+    } else {
+      ms += duration - insideWorkWindowMs(b.started_at, b.ended_at); // only the out-of-hours part
     }
-    // Work-window check in local wall-clock time, per block start's day.
-    const start = new Date(b.started_at);
-    const startsBefore = start.getHours() < WORK_WINDOW_START_HOUR;
-    const end = new Date(b.ended_at);
-    const endsAfter =
-      end.getHours() >= WORK_WINDOW_END_HOUR &&
-      !(end.getHours() === WORK_WINDOW_END_HOUR && end.getMinutes() === 0);
-    if (startsBefore || endsAfter) ms += duration;
   }
   return ms;
 }

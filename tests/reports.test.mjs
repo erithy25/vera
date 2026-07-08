@@ -100,18 +100,28 @@ check("totals: empty range → utilization null, zeros elsewhere", () => {
 const H = 3_600_000;
 const day = (h, m = 0) => new Date(2026, 6, 8, h, m).getTime();
 
-check("recoveredTimeMs: short blocks + outside-window blocks, counted once, confirmed only", () => {
+check("recoveredTimeMs: short blocks full, long blocks only the out-of-window part, confirmed only", () => {
   const blocks = [
-    { started_at: day(10), ended_at: day(10, 10), status: "confirmed" }, // 10 min short → counts
-    { started_at: day(11), ended_at: day(12), status: "confirmed" }, // 1h inside window → no
-    { started_at: day(6), ended_at: day(7, 30), status: "confirmed" }, // starts 06:00 → counts (90 min)
-    { started_at: day(17, 30), ended_at: day(19), status: "confirmed" }, // ends 19:00 → counts (90 min)
-    { started_at: day(7), ended_at: day(7, 5), status: "confirmed" }, // short AND outside → once (5 min)
-    { started_at: day(6), ended_at: day(6, 30), status: "open" }, // not confirmed → no
-    { started_at: day(9), ended_at: day(18), status: "confirmed" }, // ends exactly 18:00 → inside
+    { started_at: day(10), ended_at: day(10, 10), status: "confirmed" }, // 10 min short → full 10
+    { started_at: day(11), ended_at: day(12), status: "confirmed" }, // 1h fully inside → 0
+    { started_at: day(6), ended_at: day(7, 30), status: "confirmed" }, // 90 min all before 08:00 → 90
+    { started_at: day(17, 30), ended_at: day(19), status: "confirmed" }, // 90 min: 30 inside, 60 outside → 60
+    { started_at: day(7), ended_at: day(7, 5), status: "confirmed" }, // 5 min short (before 8) → full 5
+    { started_at: day(6), ended_at: day(6, 30), status: "open" }, // not confirmed → 0
+    { started_at: day(9), ended_at: day(18), status: "confirmed" }, // ends exactly 18:00 → fully inside → 0
   ];
-  const expected = 10 * 60000 + 90 * 60000 + 90 * 60000 + 5 * 60000;
+  const expected = (10 + 0 + 90 + 60 + 5) * 60000;
   assert.equal(recoveredTimeMs(blocks), expected);
+});
+
+check("recoveredTimeMs: a block crossing midnight (outside window) is counted, not dropped", () => {
+  const start = new Date(2026, 6, 8, 22, 30).getTime();
+  const end = new Date(2026, 6, 9, 0, 15).getTime(); // 105 min, entirely outside 08–18
+  assert.equal(recoveredTimeMs([{ started_at: start, ended_at: end, status: "confirmed" }]), 105 * 60000);
+});
+
+check("recoveredTimeMs: a long block fully inside the window contributes nothing", () => {
+  assert.equal(recoveredTimeMs([{ started_at: day(9), ended_at: day(17), status: "confirmed" }]), 0);
 });
 
 check("recovered-time definition is published verbatim", () => {

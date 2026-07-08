@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -15,7 +15,6 @@ import {
   projectsRepo,
   DbProjectWithClient,
   DbTimeEntry,
-  DbWorkBlock,
 } from "../lib/db";
 import {
   aggregateEntries,
@@ -24,6 +23,7 @@ import {
   weekRangeOf,
   shiftRange,
   RECOVERED_TIME_DEFINITION,
+  RecoveredBlockLike,
   ReportRange,
 } from "../lib/reports-core";
 import { buildExportRows, exportAdapters } from "../lib/export";
@@ -51,30 +51,35 @@ export const Reports: React.FC = () => {
   const [mode, setMode] = useState<RangeMode>("week");
   const [range, setRange] = useState<ReportRange>(() => weekRangeOf(Date.now()));
   const [entries, setEntries] = useState<DbTimeEntry[]>([]);
-  const [blocks, setBlocks] = useState<DbWorkBlock[]>([]);
+  const [blocks, setBlocks] = useState<RecoveredBlockLike[]>([]);
   const [projects, setProjects] = useState<DbProjectWithClient[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [adapterId, setAdapterId] = useState(exportAdapters[0].id);
   const [exportState, setExportState] = useState<ExportState>({ status: "idle" });
   const [showDefinition, setShowDefinition] = useState(false);
+  // Monotonic load id: a slow response for an old range must never clobber a
+  // newer one (fast prev/next clicks, or an update event mid-navigation).
+  const loadSeq = useRef(0);
 
   const fromDate = entryDateOf(range.startMs);
   const toDate = entryDateOf(prevDayStart(range.endMs)); // forRange is inclusive
 
   const load = async () => {
+    const seq = ++loadSeq.current;
     try {
       const [e, b, p] = await Promise.all([
         entriesRepo.forRange(fromDate, toDate),
-        blocksRepo.forDay(range.startMs, range.endMs),
+        blocksRepo.confirmedInRange(range.startMs, range.endMs),
         projectsRepo.listWithClients(true),
       ]);
+      if (seq !== loadSeq.current) return; // superseded by a newer range/reload
       setEntries(e);
       setBlocks(b);
       setProjects(p);
       setLoaded(true);
     } catch (err) {
       console.error("Failed to load report data:", err);
-      setLoaded(true);
+      if (seq === loadSeq.current) setLoaded(true);
     }
   };
 
@@ -82,10 +87,17 @@ export const Reports: React.FC = () => {
     setLoaded(false);
     setExportState({ status: "idle" });
     load();
-    const onUpdated = () => load();
+    // Engine passes and daily-close writes fire these; coalesce a burst
+    // (startup backfill) into one trailing reload.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onUpdated = () => {
+      clearTimeout(timer);
+      timer = setTimeout(load, 300);
+    };
     window.addEventListener("entries-updated", onUpdated);
     window.addEventListener("blocks-updated", onUpdated);
     return () => {
+      clearTimeout(timer);
       window.removeEventListener("entries-updated", onUpdated);
       window.removeEventListener("blocks-updated", onUpdated);
     };
@@ -132,8 +144,10 @@ export const Reports: React.FC = () => {
         return;
       }
       await invoke("write_text_file_at", { path, contents: adapter.serialize(rows) });
-      // Only after the file is really on disk: confirmed → exported.
-      const confirmedIds = entries.filter((e) => e.status === "confirmed").map((e) => e.id);
+      // Only after the file is really on disk: mark exactly the confirmed rows
+      // that went INTO the file (derived from the serialized rows, so the
+      // mark set can never drift from the file content).
+      const confirmedIds = rows.filter((r) => r.status === "confirmed").map((r) => r.id);
       await entriesRepo.markExported(confirmedIds);
       window.dispatchEvent(new CustomEvent("entries-updated"));
       setExportState({ status: "done", path, marked: confirmedIds.length });
@@ -171,18 +185,18 @@ export const Reports: React.FC = () => {
       ctx.font = "400 28px Inter, sans-serif";
       ctx.fillText("recovered time — work a manual timesheet would have lost", 80, 350);
 
+      // Confirmed HOURS only — never the € value: this card is meant to be
+      // posted publicly, and revenue is sensitive business data.
       ctx.fillStyle = "#1a1a1a";
       ctx.font = "400 44px Newsreader, serif";
       ctx.fillText(formatDuration(totals.confirmedMinutes * 60000), 80, 460);
-      ctx.fillText(formatEuroFromCents(totals.confirmedCents), 400, 460);
       ctx.fillStyle = "#8a8378";
       ctx.font = "400 22px Inter, sans-serif";
-      ctx.fillText("confirmed", 80, 495);
-      ctx.fillText("billed value", 400, 495);
+      ctx.fillText("confirmed and tracked automatically", 80, 495);
 
       ctx.fillStyle = "#8a8378";
       ctx.font = "400 22px Inter, sans-serif";
-      ctx.fillText("Tracked automatically · 100% on-device · Vera", 80, 575);
+      ctx.fillText("100% on-device · Vera", 80, 575);
 
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
       if (!blob) return;

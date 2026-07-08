@@ -530,6 +530,20 @@ Abschnitt 5).
   jetzt ALLE Nutzertabellen (v9-Schema inkl. clients/projects/work_blocks/
   time_entries/rules/feedback). Sidebar-Label englisch "Reports"
   (feste Sprachregel).
+- Nacharbeit aus dem Schicht-5-Review (6 Finder-Agenten): Die Kennzahl
+  "zurückgeholte Zeit" zählt bei langen Blöcken NUR noch den Teil außerhalb
+  08–18 Uhr (vorher fälschlich der ganze Block) und behandelt Blöcke über
+  Mitternacht korrekt (Tag-für-Tag-Fensterüberlappung) — Definition und
+  Berechnung stimmen jetzt überein (wichtig, weil Schicht 6 den Kauf-Trigger
+  darauf baut). Satz-Auflösung und Betragsrundung liegen jetzt EINMAL in
+  `src/lib/billing-core.ts` (pur), von DailyClose/Reports/Export gemeinsam
+  genutzt. Reports: schlanke `confirmedInRange`-Query statt voller
+  work_blocks-Zeilen, Stale-Response-Guard + Event-Coalescing gegen
+  Clobber/Reload-Bursts. Export markiert exakt die serialisierten Zeilen
+  (ExportRow trägt die Quell-ID) als exported. Share-Card zeigt nur noch
+  zurückgeholte Zeit + bestätigte Stunden — KEIN Umsatz (öffentlich
+  teilbar). reports-core-Ranges offset-frei vereinfacht, tote Exports
+  entfernt.
 
 **NACHWEIS/ABNAHME:** Export-Replika-Tests (CSV-Golden-Files; Toggl/Harvest
 importieren die Dateien nachweislich sauber). Wochenreport zeigt korrekte

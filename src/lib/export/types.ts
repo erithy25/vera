@@ -3,6 +3,7 @@
 // Schicht 8 (DATEV) only add adapters; nothing else changes.
 
 export interface ExportRow {
+  id: number; // source time_entries.id — lets the caller mark exactly what it exported
   entry_date: string; // local 'YYYY-MM-DD'
   client: string;
   project: string;
