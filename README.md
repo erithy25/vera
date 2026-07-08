@@ -2,15 +2,19 @@
 
 Automatic time tracking that writes your billing — 100% on your device.
 
-Vera runs quietly in the macOS menu bar, captures your workday locally
+Vera runs quietly in the macOS menu bar and captures your workday locally
 (active app, window, and — optionally — encrypted screen frames with on-device
-OCR), and turns it into billable work blocks: assigned to clients, with
-ready-to-bill narratives, exportable into your billing system. The AI runs
-locally via [Ollama](https://ollama.com); there is no account, no server, no
-cloud — not a single byte leaves your device.
+OCR). Layer by layer it is being built into a billing copilot that turns that
+capture into billable work blocks: assigned to clients, with ready-to-bill
+narratives, exportable into your billing system. The AI runs locally via
+[Ollama](https://ollama.com); there is no account, no server, no cloud — not a
+single byte leaves your device.
 
-The full pivot plan (market analysis, layer-by-layer build plan, acceptance
-criteria) lives in [`docs/UMBAUPLAN.md`](docs/UMBAUPLAN.md).
+**Status (0.6.0):** local capture, privacy controls, encrypted recording store,
+and the local AI setup are shipped; the block engine, client assignment,
+narrative generator, and exports arrive with the next layers. The full pivot
+plan (market analysis, layer-by-layer build plan, acceptance criteria) lives
+in [`docs/UMBAUPLAN.md`](docs/UMBAUPLAN.md).
 
 ## Stack
 

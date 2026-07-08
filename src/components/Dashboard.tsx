@@ -34,7 +34,7 @@ export const Dashboard: React.FC = () => {
         </p>
         <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint">
           <Lock size={12} strokeWidth={1.5} />
-          Recorded on this Mac only · encrypted · not a single byte leaves your device
+          Stays on this Mac only · recordings encrypted at rest · not a single byte leaves your device
         </span>
       </div>
     </div>

@@ -247,11 +247,27 @@ fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+/// Open an allowlisted external URL in the default browser. target=_blank
+/// does nothing inside the Tauri webview, so in-app links route through here;
+/// the allowlist keeps this from becoming a generic open-anything primitive.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    const ALLOWED: &[&str] = &["https://ollama.com"];
+    if !ALLOWED.contains(&url.as_str()) {
+        return Err(format!("URL not allowlisted: {}", url));
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("Failed to open URL: {}", e))?;
+    Ok(())
+}
+
 // ---------- Backend-side capture/activity persistence ----------
-// Capture and activity are now written to SQLite directly from the background
-// threads (via rusqlite, the same pattern already used by the startup cleanup
-// and cloud-key storage), so persistence no longer depends on the webview and
-// keeps running when the window is hidden or closed.
+// Capture and activity are written to SQLite directly from the background
+// threads (via rusqlite, the same pattern as the startup cleanup), so
+// persistence never depends on the webview and keeps running when the window
+// is hidden or closed.
 
 fn now_epoch_ms() -> u64 {
     std::time::SystemTime::now()
@@ -260,7 +276,7 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Port of isLuhnValid (src/lib/db.ts).
+/// Luhn checksum — validates credit-card candidates before redaction.
 fn is_luhn_valid(s: &str) -> bool {
     let mut sum = 0u32;
     let mut double = false;
@@ -282,8 +298,9 @@ fn is_luhn_valid(s: &str) -> bool {
     sum % 10 == 0
 }
 
-/// Port of redactSensitiveData (src/lib/db.ts). Regex literals are compiled
-/// with `.ok()` so a (theoretically impossible) bad pattern can never panic.
+/// Masks credit cards (Luhn-checked), IBANs, long digit runs, and API keys
+/// as [redacted] before OCR text is stored. Regex literals are compiled with
+/// `.ok()` so a (theoretically impossible) bad pattern can never panic.
 fn redact_sensitive_data(text: &str) -> String {
     let mut out = text.to_string();
 
@@ -326,7 +343,7 @@ fn redact_sensitive_data(text: &str) -> String {
     out
 }
 
-/// Port of categorizeApp (src/lib/db.ts).
+/// Rough app category from the app name (stored with each activity event).
 fn categorize_app(app_name: &str) -> String {
     let n = app_name.to_lowercase();
     let has = |k: &str| n.contains(k);
@@ -625,10 +642,11 @@ fn has_vault_key() -> bool {
     unsafe { vault_has_key() == 1 }
 }
 
-/// Decrypt a single frame thumbnail on demand and return it as a JPEG data URL.
-/// Used by retrieval to show only the cited frames (a handful per query); the
-/// redaction boxes are already baked into the image. Logs the decrypt so the
-/// "decrypt only top-N" behaviour is observable.
+/// Decrypt a single frame thumbnail on demand and return it as a JPEG data
+/// URL. Substrate for the day view of the next layer (evidence popover shows
+/// only a handful of frames); redaction boxes are already baked into the
+/// image. Logs the decrypt so the "decrypt only what is shown" behaviour is
+/// observable.
 #[tauri::command]
 fn get_frame_thumbnail(app: tauri::AppHandle, thumbnail_path: String) -> Result<String, String> {
     let data = std::fs::read(&thumbnail_path).map_err(|e| format!("read thumbnail: {}", e))?;
@@ -640,7 +658,7 @@ fn get_frame_thumbnail(app: tauri::AppHandle, thumbnail_path: String) -> Result<
     };
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
-    println!("[Vera Retrieval] decrypted 1 thumbnail for display");
+    println!("[Vera Frames] decrypted 1 thumbnail for display");
     Ok(format!("data:image/jpeg;base64,{}", b64))
 }
 
@@ -1429,18 +1447,21 @@ fn read_setting_from_app(app: &tauri::AppHandle, key: &str) -> Option<String> {
 }
 
 /// Dump every row of a table as JSON objects keyed by column name. Used only
-/// by the one-time legacy backup below; returns an empty list on any error.
-fn dump_table(conn: &rusqlite::Connection, table: &str) -> Vec<serde_json::Value> {
-    let mut rows: Vec<serde_json::Value> = Vec::new();
+/// by the one-time legacy backup below. Errors propagate so a failed dump can
+/// never produce a silently incomplete backup.
+fn dump_table(conn: &rusqlite::Connection, table: &str) -> Result<Vec<serde_json::Value>, String> {
     // `table` is a hardcoded name from the caller, never user input.
     let sql = format!("SELECT * FROM {}", table);
-    if let Ok(mut stmt) = conn.prepare(&sql) {
-        let cols: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|c| c.to_string())
-            .collect();
-        if let Ok(mapped) = stmt.query_map([], |r| {
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("prepare {}: {}", table, e))?;
+    let cols: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    let mapped = stmt
+        .query_map([], |r| {
             let mut obj = serde_json::Map::new();
             for (i, col) in cols.iter().enumerate() {
                 let v: rusqlite::types::Value = r.get(i)?;
@@ -1454,18 +1475,23 @@ fn dump_table(conn: &rusqlite::Connection, table: &str) -> Vec<serde_json::Value
                 obj.insert(col.clone(), jv);
             }
             Ok(serde_json::Value::Object(obj))
-        }) {
-            rows.extend(mapped.filter_map(|x| x.ok()));
-        }
+        })
+        .map_err(|e| format!("query {}: {}", table, e))?;
+    let mut rows = Vec::new();
+    for r in mapped {
+        rows.push(r.map_err(|e| format!("row in {}: {}", table, e))?);
     }
-    rows
+    Ok(rows)
 }
 
-/// One-time safety export of the retired `notes` and `goals` tables to a JSON
-/// file next to the database, before migration v6 drops them. Computed from
-/// $HOME (like migrate_legacy_database) and called before the Builder, so it
-/// always runs before the sql plugin can apply v6. Idempotent: skips if the
-/// backup file exists, the database is missing, or the tables are already gone.
+/// One-time safety export before migration v6 drops the retired notes/goals
+/// tables: first a raw copy of the whole database file (survives even if SQL
+/// dumping fails), then a readable JSON export written atomically
+/// (tmp + rename, so a crash can never leave a plausible-looking partial
+/// backup). Computed from $HOME (like migrate_legacy_database) and called
+/// before the Builder, so it always runs before the sql plugin can apply v6.
+/// Idempotent: skips if the JSON backup exists, the database is missing, or
+/// the tables are already gone.
 fn backup_legacy_tables_before_drop() {
     let home = match std::env::var("HOME") {
         Ok(h) => h,
@@ -1485,7 +1511,10 @@ fn backup_legacy_tables_before_drop() {
     }
     let conn = match rusqlite::Connection::open(&db) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            println!("[Vera Migrate] legacy backup FAILED to open db: {}", e);
+            return;
+        }
     };
     let _ = conn.busy_timeout(Duration::from_millis(3000));
     let table_exists = |name: &str| -> bool {
@@ -1502,22 +1531,57 @@ fn backup_legacy_tables_before_drop() {
     if !table_exists("notes") && !table_exists("goals") {
         return; // migration v6 already ran (or the tables never existed)
     }
-    let notes = if table_exists("notes") { dump_table(&conn, "notes") } else { Vec::new() };
-    let goals = if table_exists("goals") { dump_table(&conn, "goals") } else { Vec::new() };
+
+    // Belt-and-suspenders: keep a raw copy of the pre-v6 database file. A
+    // plain file copy has almost no failure modes, so old data survives even
+    // if the JSON export below hits an error.
+    let raw_copy = dir.join("vera-pre-v6-backup.db");
+    if !raw_copy.exists() {
+        match std::fs::copy(&db, &raw_copy) {
+            Ok(_) => println!("[Vera Migrate] pre-v6 database copied to {}", raw_copy.display()),
+            Err(e) => println!("[Vera Migrate] pre-v6 database copy failed: {}", e),
+        }
+    }
+
+    let dumped: Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> = (|| {
+        let notes = if table_exists("notes") { dump_table(&conn, "notes")? } else { Vec::new() };
+        let goals = if table_exists("goals") { dump_table(&conn, "goals")? } else { Vec::new() };
+        Ok((notes, goals))
+    })();
+    let (notes, goals) = match dumped {
+        Ok(t) => t,
+        Err(e) => {
+            // No partial JSON is written; the raw DB copy above still holds the data.
+            println!("[Vera Migrate] legacy backup FAILED to read tables: {}", e);
+            return;
+        }
+    };
     let payload = serde_json::json!({
         "note": "Safety export of the retired notes/goals tables, written once before migration v6 dropped them.",
         "notes": notes,
         "goals": goals,
     });
-    match serde_json::to_string_pretty(&payload) {
-        Ok(json) => match std::fs::write(&backup, json) {
-            Ok(()) => println!(
-                "[Vera Migrate] legacy notes/goals backed up to {}",
-                backup.display()
-            ),
-            Err(e) => println!("[Vera Migrate] legacy backup write failed: {}", e),
-        },
-        Err(e) => println!("[Vera Migrate] legacy backup serialize failed: {}", e),
+    let json = match serde_json::to_string_pretty(&payload) {
+        Ok(j) => j,
+        Err(e) => {
+            println!("[Vera Migrate] legacy backup serialize failed: {}", e);
+            return;
+        }
+    };
+    // Atomic write: tmp + rename, so no crash can leave a truncated backup
+    // that later suppresses a retry (the existence check above gates on the
+    // final path only).
+    let tmp = dir.join("legacy-notes-goals-backup.json.tmp");
+    if let Err(e) = std::fs::write(&tmp, &json) {
+        println!("[Vera Migrate] legacy backup write failed: {}", e);
+        return;
+    }
+    match std::fs::rename(&tmp, &backup) {
+        Ok(()) => println!(
+            "[Vera Migrate] legacy notes/goals backed up to {}",
+            backup.display()
+        ),
+        Err(e) => println!("[Vera Migrate] legacy backup rename failed: {}", e),
     }
 }
 
@@ -1791,6 +1855,7 @@ pub fn run() {
       request_screen_recording_permission,
       open_privacy_settings,
       write_text_file_at,
+      open_external,
       set_capture_paused,
       is_capture_paused,
       update_privacy_settings,

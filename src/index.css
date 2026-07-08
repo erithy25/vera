@@ -1,3 +1,6 @@
+/* Fonts are bundled locally (see assets/fonts) — the app loads nothing from
+   the network. */
+@import "./assets/fonts/fonts.css";
 @import "tailwindcss" source(none);
 @source "./**/*.{ts,tsx}";
 @source "../index.html";

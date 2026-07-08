@@ -145,8 +145,9 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
               <div className="flex items-start gap-3">
                 <Lock size={18} strokeWidth={1.5} className="text-text-muted shrink-0 mt-0.5" />
                 <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                  Everything runs on your Mac — capture, the encrypted database, and
-                  the AI itself. There is no cloud: not a single byte leaves your device.
+                  Everything runs on your Mac — capture, the local database, and the
+                  AI itself; screen recordings are encrypted at rest. There is no
+                  cloud: not a single byte leaves your device.
                 </p>
               </div>
             </div>

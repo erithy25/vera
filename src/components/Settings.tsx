@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { Plus, X, Shield, ShieldAlert, RotateCcw } from "lucide-react";
-import { settingsRepo } from "../lib/db";
+import { activityRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";
 
@@ -335,6 +335,30 @@ export const Settings: React.FC = () => {
     }
   };
 
+  // "Clear all data" (profile menu) lands here: wipes recordings AND the
+  // activity history, so the label keeps its promise.
+  const handleDeleteEverything = async () => {
+    if (!window.confirm("Delete ALL data — screen recordings and the entire activity history? This cannot be undone.")) return;
+    setDeleteBusy(true);
+    try {
+      await invoke("clear_all_frames");
+      await activityRepo.deleteAll();
+      await refreshFramesStorage();
+    } catch (err) {
+      console.error("Failed to delete all data:", err);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleOpenOllamaSite = async () => {
+    try {
+      await invoke("open_external", { url: "https://ollama.com" });
+    } catch (err) {
+      console.error("Failed to open ollama.com:", err);
+    }
+  };
+
   const handleTogglePause = async () => {
     const nextState = !isPaused;
     setIsPaused(nextState);
@@ -491,7 +515,7 @@ export const Settings: React.FC = () => {
             <div className="flex flex-col gap-2 font-sans text-[13px] text-amber-800">
               <span className="font-semibold">How to get started:</span>
               <ol className="list-decimal pl-5 flex flex-col gap-1.5">
-                <li>Download Ollama for Mac from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="underline font-semibold hover:text-amber-950">ollama.com</a>.</li>
+                <li>Download Ollama for Mac from <button onClick={handleOpenOllamaSite} className="underline font-semibold hover:text-amber-950 cursor-pointer">ollama.com</button>.</li>
                 <li>Install and launch the Ollama application.</li>
                 <li>Vera connects automatically once Ollama is running in your menu bar. Click <strong>Refresh</strong> above to verify.</li>
               </ol>
@@ -749,13 +773,22 @@ export const Settings: React.FC = () => {
               </div>
             </div>
 
-            <button
-              onClick={handleFramesClearAll}
-              disabled={deleteBusy}
-              className="self-start px-3 py-1.5 border border-red-500/30 rounded-full text-[12px] font-sans font-medium text-red-600 hover:bg-red-500/5 transition-all cursor-pointer disabled:opacity-50"
-            >
-              Delete all recordings
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleFramesClearAll}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-red-500/30 rounded-full text-[12px] font-sans font-medium text-red-600 hover:bg-red-500/5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete all recordings
+              </button>
+              <button
+                onClick={handleDeleteEverything}
+                disabled={deleteBusy}
+                className="px-3 py-1.5 border border-red-500/30 rounded-full text-[12px] font-sans font-medium text-red-600 hover:bg-red-500/5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                Delete everything (incl. activity history)
+              </button>
+            </div>
           </div>
 
           {/* Profile Card */}

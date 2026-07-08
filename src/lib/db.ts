@@ -85,6 +85,12 @@ export const activityRepo = {
     );
   },
 
+  // Wipe the entire activity history ("Delete everything" in Settings).
+  async deleteAll(): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM activity_events");
+  },
+
   // Local-midnight timestamps (ms) of every day that has activity, most
   // recent first — drives day selectors.
   async activeDays(): Promise<number[]> {
