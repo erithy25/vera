@@ -7,8 +7,9 @@ Vera runs quietly in the macOS menu bar and captures your workday locally
 OCR). Layer by layer it is being built into a billing copilot that turns that
 capture into billable work blocks: assigned to clients, with ready-to-bill
 narratives, exportable into your billing system. The AI runs locally via
-[Ollama](https://ollama.com); there is no account, no server, no cloud — not a
-single byte leaves your device.
+[Ollama](https://ollama.com); there is no account, no server, no cloud AI —
+your workday never leaves your device on its own (only the confirmed entries
+you explicitly export or push to a billing integration do).
 
 **Status (0.6.0):** local capture, privacy controls, encrypted recording store,
 and the local AI setup are shipped; the block engine, client assignment,

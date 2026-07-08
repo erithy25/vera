@@ -26,7 +26,38 @@ check("isConfigured requires every credential field", () => {
   assert.equal(moco.isConfigured({ subdomain: "acme", apiKey: "k" }), true);
   assert.equal(adapterFor("awork").isConfigured({}), false);
   assert.equal(adapterFor("awork").isConfigured({ apiKey: "k" }), true);
-  assert.equal(adapterFor("clio").isConfigured({ accessToken: "t" }), true);
+  // Clio: region is required (a token routed to the wrong host silently 401s).
+  assert.equal(adapterFor("clio").isConfigured({ accessToken: "t" }), false);
+  assert.equal(adapterFor("clio").isConfigured({ accessToken: "t", region: "eu" }), true);
+  assert.equal(adapterFor("clio").isConfigured({ accessToken: "t", region: "xx" }), false);
+});
+
+check("MOCO subdomain must be a bare label (no host injection)", () => {
+  const moco = adapterFor("moco");
+  assert.equal(moco.isConfigured({ subdomain: "acme", apiKey: "k" }), true);
+  assert.equal(moco.isConfigured({ subdomain: "evil.com/x", apiKey: "k" }), false);
+  assert.equal(moco.isConfigured({ subdomain: "evil.com#", apiKey: "k" }), false);
+  assert.equal(moco.isConfigured({ subdomain: "a b", apiKey: "k" }), false);
+});
+
+check("validateRemoteId catches malformed mappings per provider", () => {
+  const moco = adapterFor("moco");
+  assert.equal(moco.validateRemoteId("123:456"), null);
+  assert.ok(moco.validateRemoteId("123")); // missing task id → error
+  assert.ok(moco.validateRemoteId("1:2:3")); // extra part → error
+  assert.ok(moco.validateRemoteId("a:b")); // non-numeric → error
+  assert.equal(adapterFor("awork").validateRemoteId("guid-abc"), null);
+  assert.ok(adapterFor("awork").validateRemoteId("   ")); // empty → error
+  assert.equal(adapterFor("clio").validateRemoteId("999"), null);
+  assert.ok(adapterFor("clio").validateRemoteId("nope")); // non-numeric → error
+});
+
+check("Clio host map covers us/eu/ca/au", () => {
+  const clio = adapterFor("clio");
+  const host = (region) => clio.buildEntryRequest(entry, "1", { accessToken: "T", region }).url;
+  assert.ok(host("us").startsWith("https://app.clio.com/"));
+  assert.ok(host("ca").startsWith("https://ca.app.clio.com/"));
+  assert.ok(host("au").startsWith("https://au.app.clio.com/"));
 });
 
 check("MOCO: Token auth, project:task split, 2-decimal hours, only entry data on the wire", () => {

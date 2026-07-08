@@ -486,7 +486,7 @@ export const Settings: React.FC = () => {
           <div className="flex flex-col gap-0.5">
             <h2 className="font-serif text-[20px] font-normal text-text-primary">Local AI</h2>
             <p className="font-sans text-[13px] text-text-faint">
-              The local Ollama model Vera will use to assign work blocks and draft billing narratives. There is no cloud engine — not a single byte leaves your device.
+              The local Ollama model Vera will use to assign work blocks and draft billing narratives. There is no cloud engine — your capture and the AI never leave this Mac.
             </p>
           </div>
           <div className="flex items-center gap-2">

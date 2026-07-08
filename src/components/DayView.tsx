@@ -744,7 +744,7 @@ export const DayView: React.FC<DayViewProps> = ({
 
       <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint mt-2">
         <Lock size={12} strokeWidth={1.5} />
-        Built on this Mac from your local capture · raw recordings expire, blocks and their evidence remain · not a single byte leaves your device
+        Built on this Mac from your local capture · raw recordings expire, blocks and their evidence remain · your captured activity never leaves your device
       </span>
 
       {/* Daily close overlay (sweep → narratives → totals) */}

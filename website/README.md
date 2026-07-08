@@ -46,8 +46,8 @@ Firm Edition) und `source` (`hero` oder `form`).
 
 - Standard (`/`): Money-Variante — "Vera wins back your lost billable
   hours."
-- `/?v=privacy`: Privacy-Variante — "The only AI time tracker where not a
-  single byte leaves your device."
+- `/?v=privacy`: Privacy-Variante — "The AI time tracker where your screen
+  never leaves your Mac."
 
 Die Variante wird bei jeder Wartelisten-Anmeldung mitgesendet und lässt sich
 so direkt in den Formular-Daten auswerten.

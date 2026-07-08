@@ -239,7 +239,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 <p className="font-sans text-[14px] text-text-muted leading-relaxed">
                   Everything runs on your Mac — capture, the local database, and the
                   AI itself; screen recordings are encrypted at rest. There is no
-                  cloud: not a single byte leaves your device.
+                  cloud AI: your workday never leaves your device on its own.
                 </p>
               </div>
             </div>
@@ -523,7 +523,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
             <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint">
               <Lock size={12} strokeWidth={1.5} />
-              14-day free trial · no account, no credit card · not a single byte leaves your device
+              14-day free trial · no account, no credit card · your capture never leaves your device
             </span>
           </div>
         )}

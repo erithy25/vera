@@ -89,3 +89,15 @@ export async function activateLicense(raw: string): Promise<string | null> {
 export async function deactivateLicense(): Promise<void> {
   await settingsRepo.clearLicenseKey();
 }
+
+/**
+ * The gate message for a paid action (export, integration push), or null when
+ * the user is entitled. One place so every paid-action gate stays in sync.
+ * `action` completes "…in Settings to <action>.".
+ */
+export function licenseGateMessage(ent: Entitlement, action: string): string | null {
+  if (ent.entitled) return null;
+  return ent.status === "trial_expired"
+    ? `Your trial has ended. Add a license in Settings to ${action}.`
+    : `Your license has lapsed. Renew it in Settings to ${action}.`;
+}

@@ -27,7 +27,7 @@ import {
   ReportRange,
 } from "../lib/reports-core";
 import { buildExportRows, exportAdapters } from "../lib/export";
-import { currentEntitlement } from "../lib/license";
+import { currentEntitlement, licenseGateMessage } from "../lib/license";
 import { IntegrationsPushCard } from "./IntegrationsPushCard";
 import { entryDateOf } from "../lib/narrative-core";
 import { prevDayStart, formatDuration, formatEuroFromCents } from "../lib/format";
@@ -133,15 +133,9 @@ export const Reports: React.FC = () => {
     try {
       // Billing-format export is the paid feature. The full-data backup in the
       // profile menu stays free — your data is always yours.
-      const ent = await currentEntitlement();
-      if (!ent.entitled) {
-        setExportState({
-          status: "error",
-          message:
-            ent.status === "trial_expired"
-              ? "Your trial has ended. Add a license in Settings to export billing files."
-              : "Your license has lapsed. Renew it in Settings to export billing files.",
-        });
+      const gate = licenseGateMessage(await currentEntitlement(), "export billing files");
+      if (gate) {
+        setExportState({ status: "error", message: gate });
         return;
       }
       const rows = buildExportRows(entries, projects);
@@ -434,7 +428,7 @@ export const Reports: React.FC = () => {
 
       <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint mt-2">
         <Lock size={12} strokeWidth={1.5} />
-        Computed on this Mac from your local entries · not a single byte leaves your device
+        Computed on this Mac from your local entries · nothing leaves your device unless you export or push it
       </span>
     </div>
   );

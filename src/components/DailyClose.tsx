@@ -412,7 +412,7 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
             </div>
             <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint">
               <Lock size={12} strokeWidth={1.5} />
-              Written locally by your model · not a single byte leaves your device
+              Written locally by your model · nothing leaves your device unless you export it
             </span>
           </div>
         )}

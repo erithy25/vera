@@ -614,11 +614,11 @@ const heroCopy = {
   money: {
     eyebrow: "Automatic time tracking for people who bill",
     h1: "Vera wins back your lost billable hours.",
-    sub: "Automatic time tracking that understands your day and writes your billing narratives — 100% on your Mac. Not a single byte leaves your device.",
+    sub: "Automatic time tracking that understands your day and writes your billing narratives — 100% on your Mac. Your workday never leaves your device on its own.",
   },
   privacy: {
     eyebrow: "Time tracking without the cloud",
-    h1: "The only AI time tracker where not a single byte leaves your device.",
+    h1: "The AI time tracker where your screen never leaves your Mac.",
     sub: "Vera understands your workday, assigns it to clients and writes your billing narratives — entirely on your Mac. And wins back the hours manual tracking loses along the way.",
   },
 } as const;
@@ -712,7 +712,7 @@ export function App() {
             <div className="max-w-[1120px] mx-auto px-6 sm:px-10 py-24 sm:py-32 flex flex-col items-center text-center">
               <span className="text-card-surface/60"><LockIcon size={26} /></span>
               <h2 className="font-serif text-[clamp(34px,6vw,60px)] leading-[1.05] tracking-tight mt-6 max-w-[820px]">
-                No account. No server. Not a single byte leaves your device.
+                No account. No server. Nothing leaves your device unless you send it.
               </h2>
               <p className="font-sans text-[16px] sm:text-[18px] text-card-surface/70 leading-relaxed max-w-[640px] mt-6">
                 Other AI time trackers send your work content — clients, matters, contracts — to their cloud.

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Plug, Check, Lock } from "lucide-react";
 import {
   integrationsRepo,
@@ -8,41 +8,49 @@ import {
   DbProjectWithClient,
   DbIntegrationLink,
 } from "../lib/db";
-import { integrationAdapters, IntegrationAdapter, AccountConfig } from "../lib/integrations";
+import { integrationAdapters, adapterFor, AccountConfig } from "../lib/integrations";
 
 // The "Integrations" settings card (Schicht 7): connect a billing tool, then
 // map each Vera project to a target project/matter. Pushing entries happens
 // from Reports. Strictly opt-in — nothing is sent until you connect AND push.
 export const IntegrationsCard: React.FC = () => {
   const [providerId, setProviderId] = useState<string>(integrationAdapters[0].id);
-  const adapter = integrationAdapters.find((a) => a.id === providerId)!;
+  const adapter = adapterFor(providerId as any)!;
 
   const [account, setAccount] = useState<AccountConfig>({});
   const [connected, setConnected] = useState(false);
   const [projects, setProjects] = useState<DbProjectWithClient[]>([]);
   const [links, setLinks] = useState<DbIntegrationLink[]>([]);
   const [mapDraft, setMapDraft] = useState<Record<number, string>>({});
+  const [mapErrors, setMapErrors] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
+  // Guards against a slow load for a previous provider overwriting the current
+  // one when the user switches tabs quickly.
+  const loadReq = useRef(0);
 
-  const load = async (a: IntegrationAdapter) => {
+  const load = async (providerKey: string) => {
+    const req = ++loadReq.current;
     try {
+      const a = adapterFor(providerKey as any)!;
       const [saved, projs, lnks] = await Promise.all([
         settingsRepo.getIntegrationAccount(a.id),
         projectsRepo.listWithClients(true),
         integrationsRepo.linksFor(a.id),
       ]);
+      if (req !== loadReq.current) return; // a newer provider switch superseded this load
       setAccount(saved ?? {});
       setConnected(!!saved && a.isConfigured(saved));
       setProjects(projs);
       setLinks(lnks);
       setMapDraft(Object.fromEntries(lnks.map((l) => [l.project_id, l.remote_id])));
+      setMapErrors({});
     } catch (err) {
       console.error("Failed to load integration state:", err);
     }
   };
 
   useEffect(() => {
-    load(adapter);
+    load(providerId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId]);
 
@@ -70,6 +78,20 @@ export const IntegrationsCard: React.FC = () => {
 
   const saveMapping = async (project: DbProjectWithClient) => {
     const remoteId = (mapDraft[project.id] ?? "").trim();
+    // Empty clears the mapping; otherwise validate the id's shape per provider
+    // so a malformed mapping is caught here, not as an opaque API rejection.
+    if (remoteId) {
+      const err = adapter.validateRemoteId(remoteId);
+      if (err) {
+        setMapErrors((prev) => ({ ...prev, [project.id]: err }));
+        return;
+      }
+    }
+    setMapErrors((prev) => {
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
     try {
       if (remoteId) {
         await integrationsRepo.setLink(adapter.id, project.id, remoteId, `${project.client_name} — ${project.name}`);
@@ -83,7 +105,7 @@ export const IntegrationsCard: React.FC = () => {
   };
 
   const activeProjects = projects.filter(isActiveProject);
-  const mappedCount = links.filter((l) => l.remote_id).length;
+  const mappedCount = links.length; // every stored link has a non-empty remote_id
 
   return (
     <div id="settings-integrations" className="card-style p-6 flex flex-col gap-5 scroll-mt-6">
@@ -189,18 +211,25 @@ export const IntegrationsCard: React.FC = () => {
           )}
           <div className="flex flex-col gap-2">
             {activeProjects.map((p) => (
-              <div key={p.id} className="flex items-center gap-3">
-                <span className="flex-1 min-w-0 font-sans text-[13px] text-text-primary truncate">
+              <div key={p.id} className="flex items-start gap-3">
+                <span className="flex-1 min-w-0 font-sans text-[13px] text-text-primary truncate pt-1.5">
                   {p.client_name} — {p.name}
                 </span>
-                <input
-                  type="text"
-                  value={mapDraft[p.id] ?? ""}
-                  onChange={(e) => setMapDraft((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                  onBlur={() => saveMapping(p)}
-                  placeholder="remote id"
-                  className="w-52 px-3 py-1.5 bg-bg-warm border border-border-hairline rounded-lg font-sans text-[12px] text-text-primary outline-none focus:border-text-muted"
-                />
+                <div className="flex flex-col gap-1 w-52 shrink-0">
+                  <input
+                    type="text"
+                    value={mapDraft[p.id] ?? ""}
+                    onChange={(e) => setMapDraft((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    onBlur={() => saveMapping(p)}
+                    placeholder="remote id"
+                    className={`px-3 py-1.5 bg-bg-warm border rounded-lg font-sans text-[12px] text-text-primary outline-none focus:border-text-muted ${
+                      mapErrors[p.id] ? "border-red-400" : "border-border-hairline"
+                    }`}
+                  />
+                  {mapErrors[p.id] && (
+                    <span className="font-sans text-[11px] text-red-600">{mapErrors[p.id]}</span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

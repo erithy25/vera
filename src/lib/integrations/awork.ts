@@ -6,13 +6,15 @@ import { IntegrationAdapter, PushableEntry, HttpRequest, AccountConfig } from ".
 export const aworkAdapter: IntegrationAdapter = {
   id: "awork",
   label: "awork",
-  docsUrl: "https://developers.awork.com/",
   fields: [
     { key: "apiKey", label: "API key", placeholder: "Settings → Integrations → API keys", secret: true },
   ],
   remoteIdHelp: "Paste the awork project id (GUID) from the project's URL.",
 
   isConfigured: (a) => !!a.apiKey?.trim(),
+
+  validateRemoteId: (remoteId) =>
+    remoteId.trim().length > 0 ? null : "Enter the awork project id (GUID).",
 
   buildEntryRequest(entry: PushableEntry, remoteId: string, account: AccountConfig): HttpRequest {
     return {

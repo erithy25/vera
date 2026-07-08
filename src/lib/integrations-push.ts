@@ -51,12 +51,26 @@ export async function pushRange(
     const result = await sendEntry(adapter, account, cand.entry, cand.remoteId, (url, init) =>
       fetch(url, init)
     );
-    if (result.ok) {
+    if (!result.ok) {
+      outcomes.push({ entryId: cand.entry.id, status: "error", message: result.message });
+      continue;
+    }
+    // The POST succeeded — the entry now lives in the target system. Record it
+    // (dedup) and mark it exported. If that local write fails, DON'T let it
+    // abort the batch or vanish silently: surface a clear warning so the user
+    // knows this one landed remotely but isn't recorded (do not re-push it).
+    try {
       await integrationsRepo.recordPush(cand.entry.id, adapter.id, result.remoteId);
       await entriesRepo.markExported([cand.entry.id]);
       outcomes.push({ entryId: cand.entry.id, status: "pushed", remoteId: result.remoteId });
-    } else {
-      outcomes.push({ entryId: cand.entry.id, status: "error", message: result.message });
+    } catch (err: any) {
+      outcomes.push({
+        entryId: cand.entry.id,
+        status: "error",
+        message: `Sent to ${adapter.label} but could not be recorded locally (${
+          err?.message || String(err)
+        }) — do NOT push again to avoid a duplicate.`,
+      });
     }
   }
 

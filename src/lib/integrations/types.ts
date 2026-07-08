@@ -35,13 +35,14 @@ export type AccountConfig = Record<string, string>;
 export interface IntegrationAdapter {
   id: ProviderId;
   label: string;
-  docsUrl: string;
   /** Credential/config fields the user fills to connect. */
   fields: AccountField[];
   /** One-line help for which id to paste when mapping a project. */
   remoteIdHelp: string;
-  /** True only if every required field is present and non-empty. */
+  /** True only if every required field is present and valid. */
   isConfigured(account: AccountConfig): boolean;
+  /** Validate a project mapping's remote id; return an error message, or null if ok. */
+  validateRemoteId(remoteId: string): string | null;
   /** Build the POST that creates ONE time entry in the target system. */
   buildEntryRequest(entry: PushableEntry, remoteId: string, account: AccountConfig): HttpRequest;
   /** Pull the created remote id out of a success response (parsed JSON). */

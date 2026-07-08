@@ -11,7 +11,7 @@ export type FetchLike = (
 /**
  * Send ONE confirmed entry to a target billing API. Pure of DB and globals —
  * the caller injects fetch. Response handling: non-2xx → error with a short
- * body excerpt; empty/无 body on success is tolerated (falls back to the
+ * body excerpt; an empty body on success is tolerated (falls back to the
  * mapped remote id).
  */
 export async function sendEntry(

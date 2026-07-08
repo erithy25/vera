@@ -647,6 +647,21 @@ bleibt frei. Website: Integrations-Sektion ("Vera + Moco/awork/Clio"),
 Privacy-Copy präzisiert ("nichts verlässt automatisch — du steuerst jeden
 Export"). CLAUDE.md-Netzwerkregel entsprechend erweitert.
 
+Nacharbeit aus dem Schicht-7-Review (6 Finder-Agenten, 14 Funde behoben):
+remote-id-Validierung pro Provider (Moco `projectId:taskId`, Clio Matter-Nr.)
+im Mapping-UI; Clio-Region PFLICHT mit Host-Map us/eu/ca/au (falscher Host =
+stiller 401); Moco-Subdomain auf `^[a-z0-9-]+$` beschränkt (keine
+Host-Injection); Push-Schleife kapselt die Post-Erfolg-DB-Schreibvorgänge pro
+Eintrag — ein lokaler Schreibfehler nach erfolgreichem Senden wird als
+sichtbare Warnung ("gesendet, aber nicht protokolliert — nicht erneut pushen")
+gezeigt statt still ein künftiges Duplikat zu riskieren; Load-Race-Guard beim
+Provider-Wechsel; geteilter `licenseGateMessage`-Helfer (Export + Push);
+totes `docsUrl`/ungenutzte Re-Exports entfernt. Privacy-Copy konsequent
+präzisiert: Capture/KI-Kontexte behalten "verlässt nie das Gerät" (weiter
+wahr), das Gesamtprodukt sagt jetzt "nichts verlässt das Gerät, außer du
+sendest/exportierst es" (App-Footer, Onboarding, Website-Hero/Privacy-Band/
+Meta, READMEs) — kein absoluter Claim widerspricht mehr dem Push.
+
 **NACHWEIS/ABNAHME:** Ein Abrechnungsmonat wird von echten Beta-Nutzern
 produktiv in mindestens 2 Zielsysteme übergeben. (Der Live-Nachweis gegen
 echte APIs braucht echte Konten/Keys + macOS — im Container sind die reinen

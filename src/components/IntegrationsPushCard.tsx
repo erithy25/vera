@@ -3,7 +3,7 @@ import { UploadCloud, Lock } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { integrationAdapters, IntegrationAdapter } from "../lib/integrations";
 import { pushRange, PushSummary } from "../lib/integrations-push";
-import { currentEntitlement } from "../lib/license";
+import { currentEntitlement, licenseGateMessage } from "../lib/license";
 
 interface Props {
   fromDate: string;
@@ -41,13 +41,9 @@ export const IntegrationsPushCard: React.FC<Props> = ({ fromDate, toDate }) => {
     setError(null);
     setSummary(null);
     try {
-      const ent = await currentEntitlement();
-      if (!ent.entitled) {
-        setError(
-          ent.status === "trial_expired"
-            ? "Your trial has ended. Add a license in Settings to push to your billing tool."
-            : "Your license has lapsed. Renew it in Settings to push to your billing tool."
-        );
+      const gate = licenseGateMessage(await currentEntitlement(), "push to your billing tool");
+      if (gate) {
+        setError(gate);
         return;
       }
       const account = await settingsRepo.getIntegrationAccount(adapter.id);
