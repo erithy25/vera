@@ -512,6 +512,25 @@ Abschnitt 5).
   `src/lib/export/backup.ts` auf (kompletter DSGVO-Datenauszug), der Rest
   entfällt.
 
+**UMGEBAUT:**
+- Umsetzungsnotizen Schicht 5: Adapter-Registry in `src/lib/export/index.ts`
+  (csv/toggl/harvest, gemeinsamer RFC-4180-Serializer, Golden-File-Tests:
+  `npm run test:export`); Zeilen-Auflösung (Sätze, Billability, Beträge)
+  EINMAL in `rows.ts` — Drafts erscheinen nie in einem Export. Toggl braucht
+  Startzeiten, Vera hat keine: synthetisch ab 09:00 pro Tag gestapelt
+  (dokumentiert im Adapter). Export markiert enthaltene bestätigte Einträge
+  erst NACH erfolgreichem Schreiben als `exported`. Report-Mathe pur in
+  `src/lib/reports-core.ts` (`npm run test:reports`): Wochen-/Monatsranges
+  DST-sicher, Auslastung = billable/bestätigt, unabgerechnet = confirmed
+  ohne exported, zurückgeholte Zeit exakt nach Plandefinition (<15 min oder
+  außerhalb 08–18 Uhr, pro Block einmal) — Definition steht wörtlich als
+  `RECOVERED_TIME_DEFINITION` in der UI. Share-Card als selbst gezeichnetes
+  1200×630-Canvas-PNG (keine Client-/Erzähltexte, keine neue Dependency)
+  über neuen Rust-Command `write_binary_file_at`. backup.ts exportiert
+  jetzt ALLE Nutzertabellen (v9-Schema inkl. clients/projects/work_blocks/
+  time_entries/rules/feedback). Sidebar-Label englisch "Reports"
+  (feste Sprachregel).
+
 **NACHWEIS/ABNAHME:** Export-Replika-Tests (CSV-Golden-Files; Toggl/Harvest
 importieren die Dateien nachweislich sauber). Wochenreport zeigt korrekte
 Summen gegen Fixture-Daten.

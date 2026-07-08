@@ -1,3 +1,5 @@
 .segmentation.bundle.mjs
 .assignment-core.bundle.mjs
 .narrative-core.bundle.mjs
+.export.bundle.mjs
+.reports-core.bundle.mjs

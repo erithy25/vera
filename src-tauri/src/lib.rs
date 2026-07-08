@@ -247,6 +247,13 @@ fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+/// Binary sibling of write_text_file_at — used for the report share-card PNG
+/// (a few hundred KB at most, so the JSON byte-array round-trip is fine).
+#[tauri::command]
+fn write_binary_file_at(path: String, contents: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
+}
+
 /// Open an allowlisted external URL in the default browser. target=_blank
 /// does nothing inside the Tauri webview, so in-app links route through here;
 /// the allowlist keeps this from becoming a generic open-anything primitive.
@@ -1948,6 +1955,7 @@ pub fn run() {
       request_screen_recording_permission,
       open_privacy_settings,
       write_text_file_at,
+      write_binary_file_at,
       open_external,
       set_capture_paused,
       is_capture_paused,

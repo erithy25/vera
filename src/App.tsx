@@ -3,6 +3,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { DayView } from "./components/DayView";
 import { ClientsProjects } from "./components/ClientsProjects";
+import { Reports } from "./components/Reports";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
@@ -173,6 +174,8 @@ function App() {
               <Settings />
             ) : currentView === "Clients & Projects" ? (
               <ClientsProjects />
+            ) : currentView === "Reports" ? (
+              <Reports />
             ) : (
               <DayView
                 openDailyCloseSignal={dailyCloseSignal}

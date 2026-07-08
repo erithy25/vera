@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { useUserProfile } from "../lib/useUserProfile";
-import { exportAllData } from "../lib/exportData";
+import { exportBackup } from "../lib/export/backup";
 import { SettingsSection } from "../lib/settingsNav";
 
 interface ProfileMenuProps {
@@ -65,7 +65,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ onClose, onNavigateSet
   const handleExport = async () => {
     setExportState({ status: "working" });
     try {
-      const path = await exportAllData();
+      const path = await exportBackup();
       if (path) {
         setExportState({ status: "done", path });
       } else {
