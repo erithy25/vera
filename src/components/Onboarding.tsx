@@ -6,15 +6,11 @@ import {
   MousePointerClick,
   Globe,
   Check,
-  ExternalLink,
   ArrowRight,
   ArrowLeft,
-  Cpu,
-  Cloud,
 } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
-import { ollamaClient } from "../lib/ollama";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -35,11 +31,13 @@ const StatusChip: React.FC<{ granted: boolean; label?: string }> = ({ granted, l
   </span>
 );
 
+// Minimal first-run flow: what Vera is → permissions → name. The full
+// sales-grade onboarding (model setup, first clients, time-to-wow) ships with
+// the monetization layer.
 export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [step, setStep] = useState(1);
   const [accessibility, setAccessibility] = useState<PermissionState>("unknown");
   const [screenRecording, setScreenRecording] = useState<PermissionState>("unknown");
-  const [ollamaOnline, setOllamaOnline] = useState<boolean>(false);
   const [nameInput, setNameInput] = useState("");
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -66,12 +64,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       return () => {
         if (pollRef.current) clearInterval(pollRef.current);
       };
-    }
-  }, [step]);
-
-  useEffect(() => {
-    if (step === 3) {
-      ollamaClient.isRunning().then(setOllamaOnline).catch(() => setOllamaOnline(false));
     }
   }, [step]);
 
@@ -139,20 +131,22 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
               Vera
             </h1>
             <p className="font-serif text-[22px] text-text-muted italic text-center leading-relaxed -mt-2">
-              Your private, local AI assistant that remembers your day.
+              Automatic time tracking that wins back your billable hours.
             </p>
             <div className="card-style p-6 w-full flex flex-col gap-4">
               <div className="flex items-start gap-3">
                 <Eye size={18} strokeWidth={1.5} className="text-text-muted shrink-0 mt-0.5" />
                 <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                  Vera quietly tracks which apps you use and reads what is on your screen, so you can ask things like <span className="italic">"what did I work on this morning?"</span>
+                  Vera quietly captures your workday and turns it into billable work
+                  blocks — assigned to clients, with ready-to-bill narratives.
                 </p>
               </div>
               <div className="h-px bg-border-hairline w-full" />
               <div className="flex items-start gap-3">
                 <Lock size={18} strokeWidth={1.5} className="text-text-muted shrink-0 mt-0.5" />
                 <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                  Everything stays on your Mac — your activity, screen memory, and the AI itself run locally. A cloud engine is optional and uses your own API key.
+                  Everything runs on your Mac — capture, the encrypted database, and
+                  the AI itself. There is no cloud: not a single byte leaves your device.
                 </p>
               </div>
             </div>
@@ -165,7 +159,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             <div className="flex flex-col gap-1.5">
               <h2 className="font-serif text-[32px] font-normal tracking-tight">Permissions</h2>
               <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                Vera needs two macOS permissions to remember your day. Grant them in System Settings — the status updates live. You can skip and grant them later in Settings.
+                Vera needs two macOS permissions to reconstruct your workday. Grant
+                them in System Settings — the status updates live. macOS re-confirms
+                the screen permission about once a month; that's normal, and Vera
+                will remind you. You can skip and grant them later in Settings.
               </p>
             </div>
 
@@ -198,7 +195,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 <div className="flex flex-col min-w-0 flex-1">
                   <span className="font-sans text-[14px] font-medium">Screen Recording</span>
                   <span className="font-sans text-[12px] text-text-faint">
-                    Lets Vera read text on your screen to build your private memory.
+                    Lets Vera read what you work on, so time blocks can be assigned to the right client.
                   </span>
                 </div>
                 <StatusChip granted={screenRecording === "granted"} />
@@ -236,75 +233,21 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
             {!allPermissionsGranted && (
               <p className="font-sans text-[12px] text-text-faint leading-relaxed">
-                Without Accessibility, activity tracking stays empty; without Screen Recording, Vera cannot build screen memory. Everything else keeps working, and you can grant both later in Settings.
+                Without Accessibility, activity tracking stays empty; without Screen
+                Recording, Vera cannot understand what you worked on. Everything else
+                keeps working, and you can grant both later in Settings.
               </p>
             )}
           </div>
         )}
 
-        {/* Step 3 — Engine */}
+        {/* Step 3 — Name */}
         {step === 3 && (
-          <div className="flex flex-col gap-5 select-none">
-            <div className="flex flex-col gap-1.5">
-              <h2 className="font-serif text-[32px] font-normal tracking-tight">Choose your engine</h2>
-              <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                Vera answers questions with a local model by default. You can switch anytime in Settings → AI Engine.
-              </p>
-            </div>
-
-            <div className="card-style p-5 flex flex-col gap-4">
-              <div className="flex items-start gap-3">
-                <Cpu size={18} strokeWidth={1.5} className="text-text-muted shrink-0 mt-0.5" />
-                <div className="flex flex-col gap-1 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-sans text-[14px] font-medium">Local (default)</span>
-                    <StatusChip
-                      granted={ollamaOnline}
-                      label={ollamaOnline ? "Ollama detected" : "Ollama not found"}
-                    />
-                  </div>
-                  <p className="font-sans text-[12px] text-text-muted leading-relaxed">
-                    Private and free — runs on your Mac via Ollama.{" "}
-                    {!ollamaOnline && (
-                      <>
-                        Install it from{" "}
-                        <a
-                          href="https://ollama.com"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline font-medium text-text-primary inline-flex items-center gap-0.5"
-                        >
-                          ollama.com <ExternalLink size={11} />
-                        </a>{" "}
-                        and pull the default models in Settings.
-                      </>
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              <div className="h-px bg-border-hairline w-full" />
-
-              <div className="flex items-start gap-3">
-                <Cloud size={18} strokeWidth={1.5} className="text-text-muted shrink-0 mt-0.5" />
-                <div className="flex flex-col gap-1 flex-1">
-                  <span className="font-sans text-[14px] font-medium">Cloud (optional)</span>
-                  <p className="font-sans text-[12px] text-text-muted leading-relaxed">
-                    Bring your own Anthropic or OpenAI API key for stronger answers. Your screen memory and search always stay on-device — only your question plus retrieved snippets are sent.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4 — Name */}
-        {step === 4 && (
           <div className="flex flex-col gap-5 select-none">
             <div className="flex flex-col gap-1.5">
               <h2 className="font-serif text-[32px] font-normal tracking-tight">What should Vera call you?</h2>
               <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                Shown in the sidebar and used by your agents. You can change it anytime in Settings.
+                Shown in the sidebar. You can change it anytime in Settings.
               </p>
             </div>
             <form
@@ -330,7 +273,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                   Start Vera automatically at login <span className="text-text-faint font-normal">(recommended)</span>
                 </span>
                 <span className="font-sans text-[12px] text-text-muted leading-normal">
-                  Vera runs quietly in the menu bar so it's always remembering your day. You can change this later in Settings.
+                  Vera runs quietly in the menu bar, so no billable minute goes untracked. You can change this later in Settings.
                 </span>
               </div>
               <input
@@ -346,7 +289,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         {/* Footer: progress dots + navigation */}
         <div className="flex items-center justify-between mt-2 select-none">
           <div className="flex items-center gap-2">
-            {[1, 2, 3, 4].map((s) => (
+            {[1, 2, 3].map((s) => (
               <span
                 key={s}
                 className={`w-1.5 h-1.5 rounded-full transition-all duration-200 ${
@@ -374,7 +317,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 Skip for now
               </button>
             )}
-            {step < 4 ? (
+            {step < 3 ? (
               <button
                 onClick={() => setStep(step + 1)}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-text-primary text-card-surface font-sans text-[13px] font-medium hover:bg-text-muted transition-all cursor-pointer"

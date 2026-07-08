@@ -91,9 +91,9 @@ Beweis beim Nutzer.
 
 ### Schicht 0 — Website-Abriss & Neubau (Positionierung nach außen)
 
-**Sprachregel (Owner-Entscheidung, Juli 2026): Alle Website-Texte sind
-IMMER Englisch.** Hero-Varianten heißen `money`/`privacy`, Payload-Felder
-`firm_interest`/`source`.
+**Sprachregel (Owner-Entscheidung, Juli 2026): Alle Website-Texte UND alle
+Desktop-App-Texte sind IMMER Englisch.** Hero-Varianten heißen
+`money`/`privacy`, Payload-Felder `firm_interest`/`source`.
 
 Die alte Marketing-Site ("dein lokaler KI-Begleiter") wird vollständig
 ersetzt. Parallel (kein Code): 10–15 Interviews mit Zielkunden; eine
@@ -170,6 +170,11 @@ erfasst weiter — sie kann nur noch nichts "Altes".
 - `src/components/TodayCard.tsx` (139 Z.) — Fokus/Meetings-Statistik
 - `src/components/TopAppsCard.tsx` (102 Z.) — Top-Apps-Karte
 - `src/components/TimelineCard.tsx` (224 Z.) — Dashboard-Aktivitätskarte
+- `src/components/Timeline.tsx` (304 Z.) — Frame-Timeline (Löschung aus
+  Schicht 2 vorgezogen: die Navigation verlinkt sie ab Schicht 1 nicht mehr,
+  und tote Alt-Vera-Ansichten sollen nicht überleben; `extract_frame_near`
+  bleibt in Rust für die DayView aus Schicht 2 erhalten)
+- `src/components/Wordmark.tsx` (9 Z.) — nur vom alten Dashboard genutzt
 
 **GELÖSCHT (Frontend-Bibliothek):**
 - `src/lib/agents.ts` (239 Z.) — Agenten-Definitionen, buildFrameContext
@@ -307,12 +312,11 @@ Kunden-/Projektstruktur — noch ohne KI-Zuordnung.
   "Kunden & Projekte".
 
 **GELÖSCHT:**
-- `src/components/Timeline.tsx` (304 Z.) — die Frame-/Stunden-Timeline wird
-  ersatzlos durch DayView abgelöst; der "extract_frame_near"-Vorschaupfad
-  bleibt in Rust erhalten (DayView nutzt ihn im Evidence-Popover).
-- In `src/lib/db.ts`: `activityRepo.todayStats`, `topAppsToday`,
-  `timelineToday`, `timelineThisWeek`, `timelineThisMonth`,
-  `getAppIconName` — die alten Dashboard-Statistiken. Es bleiben
+- `src/components/Timeline.tsx` — bereits in Schicht 1 vorgezogen gelöscht;
+  der "extract_frame_near"-Vorschaupfad bleibt in Rust erhalten (DayView
+  nutzt ihn im Evidence-Popover). Die alten Dashboard-Statistiken in db.ts
+  (`todayStats`, `topAppsToday`, `timelineToday/Week/Month`,
+  `getAppIconName`) sind ebenfalls schon in Schicht 1 entfallen; es blieben
   `insertEvent`, `eventsForDay`, `activeDays`.
 
 **UMGEBAUT:**

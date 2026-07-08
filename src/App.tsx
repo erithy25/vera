@@ -2,79 +2,21 @@ import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Dashboard } from "./components/Dashboard";
-import { Knowledge } from "./components/Knowledge";
 import { Settings } from "./components/Settings";
-import { Agents } from "./components/Agents";
-import { Goals } from "./components/Goals";
-import { Timeline } from "./components/Timeline";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
-import { seedDatabaseIfEmpty, initializeDefaultSettings, framesRepo, settingsRepo } from "./lib/db";
+import { initializeDefaultSettings, settingsRepo } from "./lib/db";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { ollamaClient } from "./lib/ollama";
-
-async function backfillEmbeddings() {
-  try {
-    const isOnline = await ollamaClient.isRunning();
-    if (!isOnline) {
-      console.log("[Vera AI] Ollama is offline. Skipping embedding backfill.");
-      return;
-    }
-
-    const models = await ollamaClient.listModels();
-    const embeddingModel = await settingsRepo.getEmbeddingModel();
-    if (!models.includes(embeddingModel) && !models.includes(`${embeddingModel}:latest`)) {
-      console.log(`[Vera AI] Embedding model '${embeddingModel}' not available. Skipping backfill.`);
-      return;
-    }
-
-    // Backfill embeddings for the visual memory (frames) so they are searchable.
-    const framesToEmbed = await framesRepo.needingEmbeddings(100);
-    if (framesToEmbed.length > 0) {
-      console.log(`[Vera AI] Backfilling embeddings for ${framesToEmbed.length} frames...`);
-      for (const f of framesToEmbed) {
-        try {
-          const text = (f.ocr_text || "").trim();
-          if (text) {
-            const vector = await ollamaClient.generateEmbedding(text, embeddingModel);
-            await framesRepo.updateEmbedding(f.id, vector);
-          }
-        } catch (err) {
-          console.error(`[Vera AI] Failed to embed frame ${f.id}:`, err);
-          break;
-        }
-      }
-    }
-
-    console.log("[Vera AI] Embedding backfill batch completed.");
-  } catch (err) {
-    console.error("[Vera AI] Error during backfill:", err);
-  }
-}
-
-// Backend persists captures (without embeddings); the frontend encodes new ones
-// when the window is open. Guarded so backfills never overlap.
-let embeddingBackfillRunning = false;
-async function runEmbeddingBackfill() {
-  if (embeddingBackfillRunning) return;
-  embeddingBackfillRunning = true;
-  try {
-    await backfillEmbeddings();
-  } finally {
-    embeddingBackfillRunning = false;
-  }
-}
 
 function App() {
-  const [currentView, setCurrentView] = useState<string>("Dashboard");
+  const [currentView, setCurrentView] = useState<string>("Today");
   const [dbReady, setDbReady] = useState<boolean>(false);
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
 
   useEffect(() => {
     async function initDb() {
       try {
-        await seedDatabaseIfEmpty();
         await initializeDefaultSettings();
         try {
           setOnboardingComplete(await settingsRepo.getOnboardingComplete());
@@ -82,8 +24,6 @@ function App() {
           console.error("Failed to read onboarding flag:", err);
         }
         setDbReady(true);
-        // Run embedding backfill in background
-        backfillEmbeddings();
         // If screen recording is on, unlock the encrypted media store (Touch ID)
         // so backend capture can resume. Failure leaves recording locked, not broken.
         try {
@@ -94,7 +34,7 @@ function App() {
           console.error("Recording store stayed locked (Touch ID declined):", err);
         }
       } catch (err) {
-        console.error("Vera Database initialization failed:", err);
+        console.error("Vera database initialization failed:", err);
         // Fall back to ready state so the UI still displays even if DB fails
         setDbReady(true);
       }
@@ -109,24 +49,10 @@ function App() {
     return () => window.removeEventListener("onboarding-reset", onReset);
   }, []);
 
-  // Clicking an agent on the Dashboard card switches to the Agents view
-  useEffect(() => {
-    const openAgents = () => setCurrentView("Agents");
-    window.addEventListener("vera-open-agent", openAgents);
-    return () => window.removeEventListener("vera-open-agent", openAgents);
-  }, []);
-
-  // "Jump to Timeline" from a cited frame thumbnail switches to the Timeline view
-  useEffect(() => {
-    const openTimeline = () => setCurrentView("Timeline");
-    window.addEventListener("vera-open-timeline", openTimeline);
-    return () => window.removeEventListener("vera-open-timeline", openTimeline);
-  }, []);
-
-  // The backend now writes captures/activity to SQLite directly (so capture
+  // The backend writes captures/activity to SQLite directly (so capture
   // survives the window being hidden/closed). The frontend just refreshes the
-  // UI, backfills embeddings for new captures, surfaces permission issues, and
-  // mirrors tray-driven pause/resume into the in-app state.
+  // UI, surfaces permission issues, and mirrors tray-driven pause/resume into
+  // the in-app state.
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
 
@@ -138,16 +64,8 @@ function App() {
           })
         );
         unlisteners.push(
-          await listen("capture-stored", () => {
-            window.dispatchEvent(new CustomEvent("captures-updated"));
-            runEmbeddingBackfill();
-          })
-        );
-        unlisteners.push(
           await listen("frame-stored", () => {
-            // New visual-memory frame stored — refresh views and index it for search.
-            window.dispatchEvent(new CustomEvent("captures-updated"));
-            runEmbeddingBackfill();
+            window.dispatchEvent(new CustomEvent("frames-updated"));
           })
         );
         unlisteners.push(
@@ -190,11 +108,7 @@ function App() {
   return (
     <div className="flex w-full min-h-screen bg-bg-warm font-sans text-text-primary">
       {/* Fixed 260px Left Sidebar */}
-      <Sidebar
-        currentView={currentView}
-        setCurrentView={setCurrentView}
-        dbReady={dbReady}
-      />
+      <Sidebar currentView={currentView} setCurrentView={setCurrentView} />
 
       {/* Flexible Centered Main Workspace Area */}
       <div className="flex-1 flex flex-col items-center overflow-x-hidden min-w-0">
@@ -204,17 +118,7 @@ function App() {
         {/* Content flow area */}
         <main className="w-full flex-1 flex flex-col items-center px-4">
           {dbReady ? (
-            currentView === "Dashboard" ? (
-              <Dashboard />
-            ) : currentView === "Timeline" ? (
-              <Timeline />
-            ) : currentView === "Agents" ? (
-              <Agents />
-            ) : currentView === "Knowledge" ? (
-              <Knowledge />
-            ) : currentView === "Goals" ? (
-              <Goals />
-            ) : currentView === "Settings" ? (
+            currentView === "Settings" ? (
               <Settings />
             ) : (
               <Dashboard />

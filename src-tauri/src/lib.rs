@@ -2,7 +2,6 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
 use std::sync::Mutex;
@@ -430,7 +429,7 @@ fn persist_capture_paused(app: &tauri::AppHandle, paused: bool) {
 }
 
 /// One-time copy of the database from the previous bundle identifier's data
-/// dir to the current one, so the user's notes/goals/captures/activity survive
+/// dir to the current one, so the user's data survives
 /// the com.vera.app -> app.vera.desktop change. macOS resolves the app data
 /// dir as ~/Library/Application Support/<identifier>. Computed from $HOME (not
 /// the AppHandle) and called before the Builder, so it runs before the sql
@@ -1405,16 +1404,7 @@ fn update_privacy_settings(
     apply_pause(&app, paused);
 }
 
-// ---------- AI engine: local Ollama (default) or bring-your-own-key cloud ----------
-// The cloud API key is written and read ONLY here in Rust. It is never logged
-// and never returned to the frontend; it leaves this process only inside the
-// HTTPS request to the selected provider.
-
-#[derive(Clone, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
+// ---------- Local settings access (rusqlite, shared with capture threads) ----------
 
 /// Locate the sqlite file used by tauri-plugin-sql ("sqlite:vera.db" resolves
 /// against the app config dir).
@@ -1423,33 +1413,6 @@ fn resolve_db_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         .into_iter()
         .filter_map(|dir| dir.ok().map(|d| d.join("vera.db")))
         .find(|p| p.exists())
-}
-
-/// Like resolve_db_path, but yields the canonical path even before the file
-/// exists (first launch), creating the parent directory if needed.
-fn db_path_for_write(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    if let Some(existing) = resolve_db_path(app) {
-        return Ok(existing);
-    }
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Cannot resolve app config dir: {}", e))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create app config dir: {}", e))?;
-    Ok(dir.join("vera.db"))
-}
-
-fn open_settings_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    let conn = rusqlite::Connection::open(path)
-        .map_err(|e| format!("Cannot open settings database: {}", e))?;
-    let _ = conn.busy_timeout(Duration::from_millis(3000));
-    // Same schema as migration v1; harmless if the table already exists
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        [],
-    )
-    .map_err(|e| format!("Cannot ensure settings table: {}", e))?;
-    Ok(conn)
 }
 
 fn read_setting(conn: &rusqlite::Connection, key: &str) -> Option<String> {
@@ -1465,333 +1428,98 @@ fn read_setting_from_app(app: &tauri::AppHandle, key: &str) -> Option<String> {
     read_setting(&conn, key)
 }
 
-fn validate_provider(provider: &str) -> Result<(), String> {
-    match provider {
-        "anthropic" | "openai" => Ok(()),
-        other => Err(format!("Unknown cloud provider '{}'", other)),
-    }
-}
-
-fn provider_label(provider: &str) -> &'static str {
-    if provider == "openai" { "OpenAI" } else { "Anthropic" }
-}
-
-#[tauri::command]
-fn save_cloud_api_key(app: tauri::AppHandle, provider: String, key: String) -> Result<(), String> {
-    validate_provider(&provider)?;
-    let path = db_path_for_write(&app)?;
-    let conn = open_settings_db(&path)?;
-    let setting_key = format!("cloud_api_key_{}", provider);
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        conn.execute("DELETE FROM settings WHERE key = ?1", [setting_key.as_str()])
-            .map_err(|e| format!("Failed to remove API key: {}", e))?;
-        println!("[Vera AI] Cloud API key removed for provider {}", provider);
-    } else {
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params![setting_key, trimmed],
-        )
-        .map_err(|e| format!("Failed to save API key: {}", e))?;
-        // Log only the fact that a key was saved — never the key itself
-        println!("[Vera AI] Cloud API key saved for provider {}", provider);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn has_cloud_api_key(app: tauri::AppHandle, provider: String) -> bool {
-    if validate_provider(&provider).is_err() {
-        return false;
-    }
-    read_setting_from_app(&app, &format!("cloud_api_key_{}", provider))
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
-}
-
-fn truncate_for_error(body: &str) -> String {
-    body.chars().take(300).collect()
-}
-
-fn provider_error_message(parsed: &serde_json::Value, raw_body: &str) -> String {
-    parsed
-        .pointer("/error/message")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| truncate_for_error(raw_body))
-}
-
-async fn call_anthropic(
-    key: &str,
-    model: &str,
-    messages: &[ChatMessage],
-    max_tokens: u32,
-) -> Result<String, String> {
-    // Anthropic takes the system prompt as a top-level field, not as a message
-    let system_text = messages
-        .iter()
-        .filter(|m| m.role == "system")
-        .map(|m| m.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let chat_messages: Vec<serde_json::Value> = messages
-        .iter()
-        .filter(|m| m.role != "system")
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
-    if chat_messages.is_empty() {
-        return Err("No user message to send".to_string());
-    }
-
-    let mut body = serde_json::json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": chat_messages,
-    });
-    if !system_text.is_empty() {
-        body["system"] = serde_json::Value::String(system_text);
-    }
-
-    let res = reqwest::Client::new()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .timeout(Duration::from_secs(60))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach Anthropic: {}", e))?;
-
-    let status = res.status();
-    let body_text = res
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read Anthropic response: {}", e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or(serde_json::Value::Null);
-
-    if !status.is_success() {
-        return Err(format!(
-            "Anthropic error ({}): {}",
-            status.as_u16(),
-            provider_error_message(&parsed, &body_text)
-        ));
-    }
-
-    let text = parsed
-        .get("content")
-        .and_then(|c| c.as_array())
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|b| {
-                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text").and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    if text.is_empty() {
-        return Err("Anthropic returned an empty response".to_string());
-    }
-    Ok(text)
-}
-
-async fn call_openai(key: &str, model: &str, messages: &[ChatMessage]) -> Result<String, String> {
-    let chat_messages: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
-    let body = serde_json::json!({ "model": model, "messages": chat_messages });
-
-    let res = reqwest::Client::new()
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", key))
-        .header("content-type", "application/json")
-        .timeout(Duration::from_secs(60))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach OpenAI: {}", e))?;
-
-    let status = res.status();
-    let body_text = res
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or(serde_json::Value::Null);
-
-    if !status.is_success() {
-        return Err(format!(
-            "OpenAI error ({}): {}",
-            status.as_u16(),
-            provider_error_message(&parsed, &body_text)
-        ));
-    }
-
-    let text = parsed
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if text.is_empty() {
-        return Err("OpenAI returned an empty response".to_string());
-    }
-    Ok(text)
-}
-
-async fn call_ollama_chat(model: &str, messages: &[ChatMessage]) -> Result<String, String> {
-    let chat_messages: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
-    let body = serde_json::json!({
-        "model": model,
-        "messages": chat_messages,
-        "stream": false,
-        "options": { "temperature": 0.2 },
-    });
-
-    let res = reqwest::Client::new()
-        .post("http://localhost:11434/api/chat")
-        .header("content-type", "application/json")
-        .timeout(Duration::from_secs(120))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach Ollama: {}", e))?;
-
-    let status = res.status();
-    let body_text = res
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read Ollama response: {}", e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or(serde_json::Value::Null);
-
-    if !status.is_success() {
-        let msg = parsed
-            .get("error")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| truncate_for_error(&body_text));
-        return Err(format!("Ollama error ({}): {}", status.as_u16(), msg));
-    }
-
-    let text = parsed
-        .pointer("/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if text.is_empty() {
-        return Err("Ollama returned an empty response".to_string());
-    }
-    Ok(text)
-}
-
-struct CloudConfig {
-    provider: String,
-    model: String,
-    key: String,
-}
-
-fn read_cloud_config(app: &tauri::AppHandle) -> Result<CloudConfig, String> {
-    let path = resolve_db_path(app)
-        .ok_or_else(|| "Settings database not found yet. Configure the engine in Settings first.".to_string())?;
-    let conn = rusqlite::Connection::open(&path)
-        .map_err(|e| format!("Cannot open settings database: {}", e))?;
-
-    let provider = read_setting(&conn, "cloud_provider").unwrap_or_else(|| "anthropic".to_string());
-    validate_provider(&provider)?;
-
-    let default_model = if provider == "openai" { "gpt-4o" } else { "claude-sonnet-4-6" };
-    let model = read_setting(&conn, &format!("cloud_model_{}", provider))
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| default_model.to_string());
-
-    let key = read_setting(&conn, &format!("cloud_api_key_{}", provider)).unwrap_or_default();
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        return Err(format!(
-            "Cloud mode is on, but no API key is saved for {}. Add your key in Settings → AI Engine.",
-            provider_label(&provider)
-        ));
-    }
-
-    Ok(CloudConfig { provider, model, key })
-}
-
-/// Generate a chat answer with the configured engine. Retrieval/embeddings
-/// stay local either way; this only generates the final answer.
-#[tauri::command]
-async fn generate_chat_completion(
-    app: tauri::AppHandle,
-    messages: Vec<ChatMessage>,
-) -> Result<String, String> {
-    if messages.is_empty() {
-        return Err("No messages provided".to_string());
-    }
-
-    let engine = read_setting_from_app(&app, "ai_engine").unwrap_or_else(|| "local".to_string());
-
-    if engine == "cloud" {
-        let config = read_cloud_config(&app)?;
-        match config.provider.as_str() {
-            "openai" => call_openai(&config.key, &config.model, &messages).await,
-            _ => call_anthropic(&config.key, &config.model, &messages, 1024).await,
+/// Dump every row of a table as JSON objects keyed by column name. Used only
+/// by the one-time legacy backup below; returns an empty list on any error.
+fn dump_table(conn: &rusqlite::Connection, table: &str) -> Vec<serde_json::Value> {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    // `table` is a hardcoded name from the caller, never user input.
+    let sql = format!("SELECT * FROM {}", table);
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        let cols: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        if let Ok(mapped) = stmt.query_map([], |r| {
+            let mut obj = serde_json::Map::new();
+            for (i, col) in cols.iter().enumerate() {
+                let v: rusqlite::types::Value = r.get(i)?;
+                let jv = match v {
+                    rusqlite::types::Value::Null => serde_json::Value::Null,
+                    rusqlite::types::Value::Integer(n) => serde_json::json!(n),
+                    rusqlite::types::Value::Real(f) => serde_json::json!(f),
+                    rusqlite::types::Value::Text(s) => serde_json::json!(s),
+                    rusqlite::types::Value::Blob(_) => serde_json::json!("<blob>"),
+                };
+                obj.insert(col.clone(), jv);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }) {
+            rows.extend(mapped.filter_map(|x| x.ok()));
         }
-    } else {
-        let model = read_setting_from_app(&app, "chat_model").unwrap_or_else(|| "llama3.2:3b".to_string());
-        call_ollama_chat(&model, &messages).await
     }
+    rows
 }
 
-/// Small validation request against the chosen provider/model. Uses the key
-/// from the input field when given, otherwise the stored one.
-#[tauri::command]
-async fn test_cloud_connection(
-    app: tauri::AppHandle,
-    provider: String,
-    model: String,
-    key: Option<String>,
-) -> Result<String, String> {
-    validate_provider(&provider)?;
-    let model = model.trim().to_string();
-    if model.is_empty() {
-        return Err("Enter a model id first".to_string());
-    }
-
-    let resolved_key = match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
-        Some(k) => k,
-        None => read_setting_from_app(&app, &format!("cloud_api_key_{}", provider))
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "No API key entered and none saved for {}.",
-                    provider_label(&provider)
-                )
-            })?,
+/// One-time safety export of the retired `notes` and `goals` tables to a JSON
+/// file next to the database, before migration v6 drops them. Computed from
+/// $HOME (like migrate_legacy_database) and called before the Builder, so it
+/// always runs before the sql plugin can apply v6. Idempotent: skips if the
+/// backup file exists, the database is missing, or the tables are already gone.
+fn backup_legacy_tables_before_drop() {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
     };
-
-    let ping = vec![ChatMessage {
-        role: "user".to_string(),
-        content: "Reply with the single word: ok".to_string(),
-    }];
-
-    match provider.as_str() {
-        "openai" => call_openai(&resolved_key, &model, &ping)
-            .await
-            .map(|_| format!("Connected to OpenAI ({})", model)),
-        _ => call_anthropic(&resolved_key, &model, &ping, 16)
-            .await
-            .map(|_| format!("Connected to Anthropic ({})", model)),
+    let dir = std::path::Path::new(&home)
+        .join("Library")
+        .join("Application Support")
+        .join("app.vera.desktop");
+    let db = dir.join("vera.db");
+    if !db.exists() {
+        return; // fresh install — nothing to back up
+    }
+    let backup = dir.join("legacy-notes-goals-backup.json");
+    if backup.exists() {
+        return; // already backed up on an earlier launch
+    }
+    let conn = match rusqlite::Connection::open(&db) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = conn.busy_timeout(Duration::from_millis(3000));
+    let table_exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some()
+    };
+    if !table_exists("notes") && !table_exists("goals") {
+        return; // migration v6 already ran (or the tables never existed)
+    }
+    let notes = if table_exists("notes") { dump_table(&conn, "notes") } else { Vec::new() };
+    let goals = if table_exists("goals") { dump_table(&conn, "goals") } else { Vec::new() };
+    let payload = serde_json::json!({
+        "note": "Safety export of the retired notes/goals tables, written once before migration v6 dropped them.",
+        "notes": notes,
+        "goals": goals,
+    });
+    match serde_json::to_string_pretty(&payload) {
+        Ok(json) => match std::fs::write(&backup, json) {
+            Ok(()) => println!(
+                "[Vera Migrate] legacy notes/goals backed up to {}",
+                backup.display()
+            ),
+            Err(e) => println!("[Vera Migrate] legacy backup write failed: {}", e),
+        },
+        Err(e) => println!("[Vera Migrate] legacy backup serialize failed: {}", e),
     }
 }
-
 
 /// Purge lock-screen / system-process rows from activity_events.
 /// Idempotent; runs on every launch before the UI reads any stats.
@@ -1887,6 +1615,9 @@ pub fn run() {
   // Carry existing data across the bundle-identifier change before anything
   // (including the sql plugin) can touch the new data directory.
   migrate_legacy_database();
+  // Write the one-time JSON safety export of notes/goals BEFORE the sql
+  // plugin can apply migration v6 (which drops those tables).
+  backup_legacy_tables_before_drop();
 
   let migrations = vec![
     Migration {
@@ -1968,6 +1699,26 @@ pub fn run() {
         );
       ",
       kind: MigrationKind::Up,
+    },
+    // v6 — the billing-copilot pivot: the retired companion features (notes,
+    // goals, legacy text captures) and every cloud-AI setting are removed.
+    // backup_legacy_tables_before_drop() has written a JSON safety export of
+    // notes/goals before this runs (see run() above).
+    Migration {
+      version: 6,
+      description: "drop_legacy_tables_and_cloud_settings",
+      sql: "
+        DROP TABLE IF EXISTS notes;
+        DROP TABLE IF EXISTS goals;
+        DROP TABLE IF EXISTS captures;
+        DELETE FROM settings WHERE key IN (
+          'ai_engine', 'cloud_provider', 'cloud_model_anthropic',
+          'cloud_model_openai', 'cloud_last_status', 'embedding_model',
+          'db_seeded', 'placeholder_notes_purged', 'retention_days',
+          'redaction_enabled'
+        ) OR key LIKE 'cloud_api_key_%';
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 
@@ -2043,10 +1794,6 @@ pub fn run() {
       set_capture_paused,
       is_capture_paused,
       update_privacy_settings,
-      save_cloud_api_key,
-      has_cloud_api_key,
-      test_cloud_connection,
-      generate_chat_completion,
       set_frames_capture_enabled,
       is_frames_capture_enabled,
       get_frames_storage_bytes,

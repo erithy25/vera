@@ -165,7 +165,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ onClose, onNavigateSet
 
         {/* Quick links into existing Settings */}
         <div className="flex flex-col">
-          <LinkRow icon={<Cpu size={15} strokeWidth={1.5} />} label="AI Engine" onClick={() => onNavigateSettings("ai-engine")} />
+          <LinkRow icon={<Cpu size={15} strokeWidth={1.5} />} label="Local AI" onClick={() => onNavigateSettings("local-ai")} />
           <LinkRow icon={<Shield size={15} strokeWidth={1.5} />} label="Privacy & Data" onClick={() => onNavigateSettings("privacy")} />
           <LinkRow icon={<RotateCcw size={15} strokeWidth={1.5} />} label="Re-run setup" onClick={handleRerunSetup} />
         </div>

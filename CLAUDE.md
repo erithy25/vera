@@ -2,6 +2,8 @@
 
 Tauri 2 desktop app (macOS-only: Objective-C/Swift natives, CoreGraphics/AppKit), React 19 + TypeScript + Tailwind 4 frontend (Vite), SQLite via tauri-plugin-sql, local AI via Ollama.
 
+**Product**: Vera is a billing copilot — automatic time tracking that captures the workday locally, assigns work blocks to clients, and writes ready-to-bill narratives. 100% on-device (no cloud AI, no account, no server). The layer-by-layer build plan is `docs/UMBAUPLAN.md`; develop strictly one layer at a time.
+
 ## Working agreement
 
 - **After EVERY change**: end the reply with the install command so the user can rebuild and drag the updated app into /Applications:
@@ -11,7 +13,8 @@ Tauri 2 desktop app (macOS-only: Objective-C/Swift natives, CoreGraphics/AppKit)
   ```
 
   (Insert the current working branch. `npm install` is included so new JS deps are present — `tauri build` does not install them. The `beforeBuildCommand` also runs `npm install` as a safety net. The DMG opens the drag-into-Applications window.)
+- **All user-facing copy is ALWAYS English** — desktop app UI and the website (`website/`), every new view, label, and text change (owner decision, July 2026).
 - No UI/design changes unless explicitly requested.
-- **Website (`website/`): all copy is ALWAYS English** — every new section, page, and text change (owner decision, July 2026).
 - Develop on the designated claude/* branch; commit and push after each task.
 - The app only compiles on macOS (frameworks + swiftc). In Linux containers: verify the frontend with `npx tsc --noEmit` + `npm run build`, and prove native/SQL logic with standalone replica tests.
+- Never reintroduce cloud AI calls into the app — "not a single byte leaves your device" is the product's core promise (the only network contacts are the update check and, later, license validation).

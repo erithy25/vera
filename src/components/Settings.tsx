@@ -1,13 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
-import { Plus, X, Shield, ShieldAlert, Trash2, RotateCcw } from "lucide-react";
+import { Plus, X, Shield, ShieldAlert, RotateCcw } from "lucide-react";
 import { settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";
-
-type AiEngine = "local" | "cloud";
-type CloudProvider = "anthropic" | "openai";
 
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
@@ -31,8 +28,6 @@ export const Settings: React.FC = () => {
   const [deleteBusy, setDeleteBusy] = useState<boolean>(false);
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
   const [excludedDomains, setExcludedDomains] = useState<string[]>([]);
-  const [redactionEnabled, setRedactionEnabled] = useState<boolean>(true);
-  const [retentionDays, setRetentionDays] = useState<string>("30");
 
   // Profile + macOS permission status
   const [userName, setUserNameState] = useState<string>("");
@@ -44,25 +39,13 @@ export const Settings: React.FC = () => {
   const [autostartBusy, setAutostartBusy] = useState<boolean>(false);
   const [autostartError, setAutostartError] = useState<string | null>(null);
 
-  // AI Engine state (local by default; cloud is bring-your-own-key)
-  const [aiEngine, setAiEngine] = useState<AiEngine>("local");
-  const [cloudProvider, setCloudProviderState] = useState<CloudProvider>("anthropic");
-  const [cloudModel, setCloudModelState] = useState<string>("claude-sonnet-4-6");
-  const [keyInput, setKeyInput] = useState<string>("");
-  const [keySaved, setKeySaved] = useState<boolean>(false);
-  const [testState, setTestState] = useState<{ status: "idle" | "testing" | "ok" | "error"; message: string }>({
-    status: "idle",
-    message: "",
-  });
-
   const [appInput, setAppInput] = useState("");
   const [domainInput, setDomainInput] = useState("");
 
-  // Local AI Brain state
+  // Local AI state (Ollama — the only engine; nothing leaves the device)
   const [ollamaOnline, setOllamaOnline] = useState<boolean>(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [chatModel, setChatModel] = useState<string>("llama3.2:3b");
-  const [embeddingModel, setEmbeddingModel] = useState<string>("nomic-embed-text");
   const [pullingModel, setPullingModel] = useState<string | null>(null);
   const [pullProgress, setPullProgress] = useState<{ status: string; percent: number } | null>(null);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
@@ -87,17 +70,12 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, framesOn, apps, domains, redaction, retention, dbChat, dbEmbed, engine, provider, name] = await Promise.all([
+      const [paused, framesOn, apps, domains, dbChat, name] = await Promise.all([
         settingsRepo.getCapturePaused(),
         settingsRepo.getFramesCaptureEnabled(),
         settingsRepo.getExcludedApps(),
         settingsRepo.getExcludedDomains(),
-        settingsRepo.getRedactionEnabled(),
-        settingsRepo.getRetentionDays(),
         settingsRepo.getChatModel(),
-        settingsRepo.getEmbeddingModel(),
-        settingsRepo.getAiEngine(),
-        settingsRepo.getCloudProvider(),
         settingsRepo.getUserName(),
       ]);
 
@@ -114,15 +92,8 @@ export const Settings: React.FC = () => {
         console.error("Failed to read frame storage/vault state:", err);
       }
       setExcludedDomains(domains);
-      setRedactionEnabled(redaction);
-      setRetentionDays(retention);
       setChatModel(dbChat);
-      setEmbeddingModel(dbEmbed);
-      setAiEngine(engine);
-      setCloudProviderState(provider);
       setUserNameState(name);
-      setCloudModelState(await settingsRepo.getCloudModel(provider));
-      setKeySaved(await invoke<boolean>("has_cloud_api_key", { provider }));
 
       // Initialize Rust state
       await invoke("update_privacy_settings", {
@@ -235,92 +206,10 @@ export const Settings: React.FC = () => {
     }
   };
 
-  const handleEngineChange = async (engine: AiEngine) => {
-    setAiEngine(engine);
-    try {
-      await settingsRepo.setAiEngine(engine);
-      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
-    } catch (err) {
-      console.error("Failed to save AI engine:", err);
-    }
-  };
-
-  const handleProviderChange = async (provider: CloudProvider) => {
-    setCloudProviderState(provider);
-    setKeyInput("");
-    setTestState({ status: "idle", message: "" });
-    try {
-      await settingsRepo.setCloudProvider(provider);
-      setCloudModelState(await settingsRepo.getCloudModel(provider));
-      setKeySaved(await invoke<boolean>("has_cloud_api_key", { provider }));
-      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
-    } catch (err) {
-      console.error("Failed to switch cloud provider:", err);
-    }
-  };
-
-  const handleSaveCloudModel = async (val: string) => {
-    const cleaned = val.trim();
-    if (!cleaned) return;
-    try {
-      await settingsRepo.setCloudModel(cloudProvider, cleaned);
-      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
-    } catch (err) {
-      console.error("Failed to save cloud model:", err);
-    }
-  };
-
-  // The key goes straight to Rust and is never echoed back to the UI
-  const saveKeyIfEntered = async (): Promise<void> => {
-    const entered = keyInput.trim();
-    if (!entered) return;
-    await invoke("save_cloud_api_key", { provider: cloudProvider, key: entered });
-    setKeyInput("");
-    setKeySaved(true);
-  };
-
-  const handleKeyBlur = async () => {
-    try {
-      await saveKeyIfEntered();
-    } catch (err) {
-      setTestState({ status: "error", message: errorToMessage(err) });
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTestState({ status: "testing", message: "" });
-    try {
-      await saveKeyIfEntered();
-      const message = await invoke<string>("test_cloud_connection", {
-        provider: cloudProvider,
-        model: cloudModel.trim(),
-        key: null,
-      });
-      setTestState({ status: "ok", message });
-      await settingsRepo.setCloudLastStatus("ok");
-    } catch (err) {
-      setTestState({ status: "error", message: errorToMessage(err) });
-      try {
-        await settingsRepo.setCloudLastStatus("failed");
-      } catch (statusErr) {
-        console.error("Failed to persist cloud status:", statusErr);
-      }
-    } finally {
-      window.dispatchEvent(new CustomEvent("ai-engine-updated"));
-    }
-  };
-
   const handleSaveChatModel = async (val: string) => {
     const cleaned = val.trim();
     if (cleaned) {
       await settingsRepo.setChatModel(cleaned);
-    }
-  };
-
-  const handleSaveEmbeddingModel = async (val: string) => {
-    const cleaned = val.trim();
-    if (cleaned) {
-      await settingsRepo.setEmbeddingModel(cleaned);
     }
   };
 
@@ -357,7 +246,7 @@ export const Settings: React.FC = () => {
       return true;
     } catch (err) {
       console.error("Vault unlock failed:", err);
-      window.alert("Aufnahme konnte nicht aktiviert werden (Schlüssel-Tresor): " + errorToMessage(err));
+      window.alert("Could not enable recording (key vault): " + errorToMessage(err));
       return false;
     }
   };
@@ -497,7 +386,7 @@ export const Settings: React.FC = () => {
     e.preventDefault();
     let domain = domainInput.trim().toLowerCase();
     if (!domain) return;
-    
+
     // Simple URL strip to extract clean hostname if user pasted URL
     if (domain.includes("://")) {
       try {
@@ -545,49 +434,6 @@ export const Settings: React.FC = () => {
     }
   };
 
-  const handleToggleRedaction = async () => {
-    const nextVal = !redactionEnabled;
-    setRedactionEnabled(nextVal);
-    try {
-      await settingsRepo.setRedactionEnabled(nextVal);
-    } catch (err) {
-      console.error("Failed to save redaction setting:", err);
-    }
-  };
-
-  const handleRetentionChange = async (days: string) => {
-    setRetentionDays(days);
-    try {
-      await settingsRepo.setRetentionDays(days);
-    } catch (err) {
-      console.error("Failed to save retention setting:", err);
-    }
-  };
-
-  const handleDeleteAll = async () => {
-    if (window.confirm("Are you sure you want to delete ALL screen memory? This action is permanent and cannot be undone.")) {
-      try {
-        await settingsRepo.deleteAllCaptures();
-        window.dispatchEvent(new CustomEvent("captures-updated"));
-        alert("Screen memory cleared successfully.");
-      } catch (err) {
-        console.error("Failed to clear captures database:", err);
-      }
-    }
-  };
-
-  const handleDeleteToday = async () => {
-    if (window.confirm("Are you sure you want to delete today's screen captures?")) {
-      try {
-        await settingsRepo.deleteTodaysCaptures();
-        window.dispatchEvent(new CustomEvent("captures-updated"));
-        alert("Today's captures deleted successfully.");
-      } catch (err) {
-        console.error("Failed to delete today's captures:", err);
-      }
-    }
-  };
-
   return (
     <div className="w-full max-w-[1100px] flex flex-col gap-6 px-8 pb-16 mt-8 select-none">
       {/* Header Info */}
@@ -596,144 +442,18 @@ export const Settings: React.FC = () => {
           Settings
         </h1>
         <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-          Manage your private capture configurations, data retention periods, and excluded applications.
+          Manage capture, privacy controls, and the local AI model. Everything runs on this Mac.
         </p>
       </div>
 
-      {/* AI Engine Selection Card */}
-      <div id="settings-ai-engine" className="card-style p-6 flex flex-col gap-5 scroll-mt-6">
-        <div className="flex flex-col gap-0.5 border-b border-border-hairline pb-4">
-          <h2 className="font-serif text-[20px] font-normal text-text-primary">AI Engine</h2>
-          <p className="font-sans text-[13px] text-text-faint">
-            Choose where answers are generated. Local keeps everything on-device; Cloud uses your own API key and you pay your provider directly.
-          </p>
-        </div>
-
-        {/* Engine selector */}
-        <div className="grid grid-cols-2 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
-          {(
-            [
-              { value: "local", label: "Local (private)" },
-              { value: "cloud", label: "Cloud (your API key)" },
-            ] as { value: AiEngine; label: string }[]
-          ).map((opt) => {
-            const active = aiEngine === opt.value;
-            return (
-              <button
-                key={opt.value}
-                onClick={() => handleEngineChange(opt.value)}
-                className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
-                  active
-                    ? "bg-active-hover text-text-primary font-medium soft-shadow"
-                    : "text-text-muted hover:text-text-primary"
-                }`}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {aiEngine === "cloud" && (
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Provider selection */}
-              <div className="flex flex-col gap-2.5">
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-serif text-[15px] font-normal text-text-primary">Provider</span>
-                  <span className="font-sans text-[12px] text-text-faint">Which API your key belongs to.</span>
-                </div>
-                <select
-                  value={cloudProvider}
-                  onChange={(e) => handleProviderChange(e.target.value as CloudProvider)}
-                  className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none cursor-pointer"
-                >
-                  <option value="anthropic">Anthropic</option>
-                  <option value="openai">OpenAI</option>
-                </select>
-              </div>
-
-              {/* Model id */}
-              <div className="flex flex-col gap-2.5">
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-serif text-[15px] font-normal text-text-primary">Model</span>
-                  <span className="font-sans text-[12px] text-text-faint">Any model id your key supports.</span>
-                </div>
-                <input
-                  type="text"
-                  value={cloudModel}
-                  onChange={(e) => setCloudModelState(e.target.value)}
-                  onBlur={() => handleSaveCloudModel(cloudModel)}
-                  className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none"
-                  placeholder={cloudProvider === "openai" ? "e.g. gpt-4o" : "e.g. claude-sonnet-4-6"}
-                />
-              </div>
-            </div>
-
-            {/* API key + connection test */}
-            <div className="flex flex-col gap-2.5">
-              <div className="flex items-center gap-2">
-                <span className="font-serif text-[15px] font-normal text-text-primary">API Key</span>
-                {keySaved && (
-                  <span className="flex items-center gap-1.5 px-2 py-0.5 border border-emerald-500/20 bg-emerald-500/5 rounded-full font-sans text-[11px] font-medium text-emerald-600 uppercase">
-                    Key saved
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={keyInput}
-                  onChange={(e) => setKeyInput(e.target.value)}
-                  onBlur={handleKeyBlur}
-                  autoComplete="off"
-                  className="flex-1 px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none placeholder:text-text-faint"
-                  placeholder={
-                    keySaved
-                      ? "••••••••••••  (saved — paste a new key to replace it)"
-                      : cloudProvider === "openai"
-                        ? "sk-..."
-                        : "sk-ant-..."
-                  }
-                />
-                <button
-                  onClick={handleTestConnection}
-                  disabled={testState.status === "testing"}
-                  className={`px-3 py-1.5 border rounded-xl font-sans text-[12px] font-medium transition-all ${
-                    testState.status === "testing"
-                      ? "border-border-hairline text-text-faint cursor-default animate-pulse"
-                      : "border-text-primary text-text-primary hover:bg-active-hover cursor-pointer"
-                  }`}
-                >
-                  {testState.status === "testing" ? "Testing..." : "Test connection"}
-                </button>
-              </div>
-
-              {testState.status === "ok" && (
-                <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl font-sans text-[12px] text-emerald-600 leading-normal">
-                  {testState.message || "Connected"}
-                </div>
-              )}
-              {testState.status === "error" && (
-                <div className="p-3 bg-red-500/5 border border-red-500/10 rounded-xl font-sans text-[12px] text-red-600 leading-normal">
-                  {testState.message}
-                </div>
-              )}
-
-              <p className="font-sans text-[12px] text-text-muted leading-relaxed">
-                Your key is stored locally and only sent to {cloudProvider === "openai" ? "OpenAI" : "Anthropic"}. Embeddings and search always run on-device; in cloud mode only your question plus the retrieved snippets are sent.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Local AI Brain Setup & Status Card */}
-      <div className="card-style p-6 flex flex-col gap-5">
+      {/* Local AI Card (Ollama — the only engine) */}
+      <div id="settings-local-ai" className="card-style p-6 flex flex-col gap-5 scroll-mt-6">
         <div className="flex items-center justify-between border-b border-border-hairline pb-4">
           <div className="flex flex-col gap-0.5">
-            <h2 className="font-serif text-[20px] font-normal text-text-primary">Local AI Brain</h2>
-            <p className="font-sans text-[13px] text-text-faint">Configure the local Ollama LLM and embedding engines for offline intelligence.</p>
+            <h2 className="font-serif text-[20px] font-normal text-text-primary">Local AI</h2>
+            <p className="font-sans text-[13px] text-text-faint">
+              The local Ollama model Vera will use to assign work blocks and draft billing narratives. There is no cloud engine — not a single byte leaves your device.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -753,7 +473,7 @@ export const Settings: React.FC = () => {
           </div>
         </div>
 
-        {/* Connection/Setup Guides if offline */}
+        {/* Connection/Setup guide if offline */}
         {!ollamaOnline && (
           <div className="bg-amber-500/5 border border-amber-500/10 rounded-2xl p-5 flex flex-col gap-3">
             <div className="flex items-start gap-2.5">
@@ -761,94 +481,58 @@ export const Settings: React.FC = () => {
               <div className="flex flex-col gap-1">
                 <span className="font-sans text-[14px] font-semibold text-amber-900 leading-tight">Ollama is not running</span>
                 <p className="font-sans text-[13px] text-amber-800 leading-relaxed">
-                  Vera uses <strong>Ollama</strong> as its local brain to keep all activity summaries, semantic memory search, and questions 100% private and offline on your computer.
+                  Vera uses <strong>Ollama</strong> to run its AI entirely on your Mac, so assigning and drafting stays 100% private and offline.
                 </p>
               </div>
             </div>
-            
+
             <div className="h-px bg-amber-500/10 w-full" />
-            
+
             <div className="flex flex-col gap-2 font-sans text-[13px] text-amber-800">
               <span className="font-semibold">How to get started:</span>
               <ol className="list-decimal pl-5 flex flex-col gap-1.5">
                 <li>Download Ollama for Mac from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="underline font-semibold hover:text-amber-950">ollama.com</a>.</li>
                 <li>Install and launch the Ollama application.</li>
-                <li>Vera will automatically connect once Ollama is running in your menu bar. Click <strong>Refresh</strong> above to verify.</li>
+                <li>Vera connects automatically once Ollama is running in your menu bar. Click <strong>Refresh</strong> above to verify.</li>
               </ol>
             </div>
           </div>
         )}
 
-        {/* Model Configurations */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Chat Model Config */}
-          <div className="flex flex-col gap-2.5">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-serif text-[15px] font-normal text-text-primary">Chat LLM Model</span>
-              <span className="font-sans text-[12px] text-text-faint">Small conversational model for answering questions.</span>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={chatModel}
-                onChange={(e) => setChatModel(e.target.value)}
-                onBlur={() => handleSaveChatModel(chatModel)}
-                className="flex-1 px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none"
-                placeholder="e.g. llama3.2:3b"
-              />
-              {ollamaOnline && (
-                <button
-                  onClick={() => handlePullModel(chatModel)}
-                  disabled={pullingModel !== null || availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`)}
-                  className={`px-3 py-1.5 border rounded-xl font-sans text-[12px] font-medium transition-all ${
-                    availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`)
-                      ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600 cursor-default"
-                      : pullingModel
-                        ? "border-border-hairline text-text-faint cursor-default animate-pulse"
-                        : "border-text-primary text-text-primary hover:bg-active-hover cursor-pointer"
-                  }`}
-                >
-                  {availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`) ? "Ready" : "Pull Model"}
-                </button>
-              )}
-            </div>
+        {/* Model configuration */}
+        <div className="flex flex-col gap-2.5 max-w-[480px]">
+          <div className="flex flex-col gap-0.5">
+            <span className="font-serif text-[15px] font-normal text-text-primary">AI Model</span>
+            <span className="font-sans text-[12px] text-text-faint">A small local model is enough; a larger one writes better narratives.</span>
           </div>
-
-          {/* Embedding Model Config */}
-          <div className="flex flex-col gap-2.5">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-serif text-[15px] font-normal text-text-primary">Embedding Model</span>
-              <span className="font-sans text-[12px] text-text-faint">Creates vector representations for semantic captures search.</span>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={embeddingModel}
-                onChange={(e) => setEmbeddingModel(e.target.value)}
-                onBlur={() => handleSaveEmbeddingModel(embeddingModel)}
-                className="flex-1 px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none"
-                placeholder="e.g. nomic-embed-text"
-              />
-              {ollamaOnline && (
-                <button
-                  onClick={() => handlePullModel(embeddingModel)}
-                  disabled={pullingModel !== null || availableModels.includes(embeddingModel) || availableModels.includes(`${embeddingModel}:latest`)}
-                  className={`px-3 py-1.5 border rounded-xl font-sans text-[12px] font-medium transition-all ${
-                    availableModels.includes(embeddingModel) || availableModels.includes(`${embeddingModel}:latest`)
-                      ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600 cursor-default"
-                      : pullingModel
-                        ? "border-border-hairline text-text-faint cursor-default animate-pulse"
-                        : "border-text-primary text-text-primary hover:bg-active-hover cursor-pointer"
-                  }`}
-                >
-                  {availableModels.includes(embeddingModel) || availableModels.includes(`${embeddingModel}:latest`) ? "Ready" : "Pull Model"}
-                </button>
-              )}
-            </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={chatModel}
+              onChange={(e) => setChatModel(e.target.value)}
+              onBlur={() => handleSaveChatModel(chatModel)}
+              className="flex-1 px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none"
+              placeholder="e.g. llama3.2:3b"
+            />
+            {ollamaOnline && (
+              <button
+                onClick={() => handlePullModel(chatModel)}
+                disabled={pullingModel !== null || availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`)}
+                className={`px-3 py-1.5 border rounded-xl font-sans text-[12px] font-medium transition-all ${
+                  availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`)
+                    ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600 cursor-default"
+                    : pullingModel
+                      ? "border-border-hairline text-text-faint cursor-default animate-pulse"
+                      : "border-text-primary text-text-primary hover:bg-active-hover cursor-pointer"
+                }`}
+              >
+                {availableModels.includes(chatModel) || availableModels.includes(`${chatModel}:latest`) ? "Ready" : "Pull Model"}
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Pull Streaming Progress Bar */}
+        {/* Pull streaming progress bar */}
         {pullingModel && pullProgress && (
           <div className="flex flex-col gap-2 bg-active-hover/50 p-4 border border-border-hairline rounded-2xl mt-2">
             <div className="flex justify-between items-center text-[12px] font-sans">
@@ -878,10 +562,10 @@ export const Settings: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="flex flex-col gap-0.5">
                 <span className="font-serif text-[17px] font-normal text-text-primary">
-                  Screen Capturing
+                  Capture
                 </span>
                 <span className="font-sans text-[12px] text-text-faint">
-                  Pause or resume all background captures
+                  Pause or resume all background capture
                 </span>
               </div>
               <button
@@ -910,7 +594,7 @@ export const Settings: React.FC = () => {
                   Screen recording (frames)
                 </span>
                 <span className="font-sans text-[12px] text-text-muted leading-normal">
-                  Periodically saves a downscaled snapshot of your screen (about once per second, only when the view changes) so Vera can build a richer visual memory. Stored locally on this Mac; off by default.
+                  Periodically saves a downscaled snapshot of your screen (about once per second, only when the view changes) so Vera can understand what you worked on — the raw material for your work blocks. Sensitive patterns (cards, IBANs, keys) are always redacted. Stored encrypted on this Mac; off by default.
                 </span>
               </div>
               <input
@@ -946,7 +630,7 @@ export const Settings: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="flex flex-col gap-0.5">
                 <span className="font-serif text-[17px] font-normal text-text-primary">
-                  Frame Storage
+                  Recording Storage
                 </span>
                 <span className="font-sans text-[12px] text-text-faint">
                   HEVC segments + thumbnails on this Mac
@@ -988,7 +672,7 @@ export const Settings: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="font-sans text-[12px] text-text-muted">Keep frames for</span>
+              <span className="font-sans text-[12px] text-text-muted">Keep raw recordings for</span>
               <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
                 {[7, 30, 90, 365].map((d) => {
                   const active = framesRetentionDays === d;
@@ -1012,7 +696,7 @@ export const Settings: React.FC = () => {
           </div>
 
           {/* Recording Data Management Card */}
-          <div className="card-style p-5 flex flex-col gap-4">
+          <div id="settings-clear-data" className="card-style p-5 flex flex-col gap-4 scroll-mt-6">
             <div className="flex flex-col gap-0.5">
               <span className="font-serif text-[17px] font-normal text-text-primary">
                 Recording Data
@@ -1074,87 +758,6 @@ export const Settings: React.FC = () => {
             </button>
           </div>
 
-          {/* Sensitive-data Redaction Card */}
-          <div className="card-style p-5 flex flex-col gap-3">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex flex-col gap-1">
-                <span className="font-serif text-[17px] font-normal text-text-primary">
-                  Sensitive Data Redaction
-                </span>
-                <span className="font-sans text-[12px] text-text-muted leading-normal">
-                  Automatically masks credit cards (Luhn-checked), IBANs, and API credentials into <code>[redacted]</code> inside stored captures.
-                </span>
-              </div>
-              <input
-                type="checkbox"
-                checked={redactionEnabled}
-                onChange={handleToggleRedaction}
-                className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline"
-              />
-            </div>
-          </div>
-
-          {/* Data Retention Period Card */}
-          <div className="card-style p-5 flex flex-col gap-4">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-serif text-[17px] font-normal text-text-primary">
-                Data Retention
-              </span>
-              <span className="font-sans text-[12px] text-text-faint">
-                Configure how long captures are stored on-device
-              </span>
-            </div>
-
-            <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
-              {["7", "30", "90", "forever"].map((val) => {
-                const label = val === "forever" ? "Forever" : `${val} Days`;
-                const active = retentionDays === val;
-                return (
-                  <button
-                    key={val}
-                    onClick={() => handleRetentionChange(val)}
-                    className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
-                      active
-                        ? "bg-active-hover text-text-primary font-medium soft-shadow"
-                        : "text-text-muted hover:text-text-primary"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Legacy capture data (pre-frames) — one-time cleanup */}
-          <div id="settings-clear-data" className="card-style p-5 flex flex-col gap-4 scroll-mt-6">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-serif text-[17px] font-normal text-text-primary">
-                Old capture data
-              </span>
-              <span className="font-sans text-[12px] text-text-faint">
-                Clear the legacy text-only history from before the new encrypted visual memory. The new recordings are managed under “Screen recording” above.
-              </span>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleDeleteToday}
-                className="flex-1 py-2.5 rounded-xl border border-border-hairline text-text-muted hover:text-text-primary hover:bg-active-hover font-sans text-[13px] font-medium transition-all cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                <RotateCcw size={14} />
-                Delete Today
-              </button>
-              <button
-                onClick={handleDeleteAll}
-                className="flex-1 py-2.5 rounded-xl border border-red-500/20 text-red-600 hover:text-red-700 hover:bg-red-500/5 font-sans text-[13px] font-medium transition-all cursor-pointer flex items-center justify-center gap-1.5"
-              >
-                <Trash2 size={14} />
-                Clear All Memory
-              </button>
-            </div>
-          </div>
-
           {/* Profile Card */}
           <div className="card-style p-5 flex flex-col gap-4">
             <div className="flex flex-col gap-0.5">
@@ -1162,7 +765,7 @@ export const Settings: React.FC = () => {
                 Profile
               </span>
               <span className="font-sans text-[12px] text-text-faint">
-                Your name, shown in the sidebar and your chats
+                Your name, shown in the sidebar
               </span>
             </div>
 
@@ -1192,7 +795,7 @@ export const Settings: React.FC = () => {
                   Start Vera at login
                 </span>
                 <span className="font-sans text-[12px] text-text-muted leading-normal">
-                  Launch Vera automatically when you log in, so it's always quietly running in the menu bar.
+                  Launch Vera automatically when you log in, so no billable minute goes untracked.
                 </span>
               </div>
               <input
@@ -1273,7 +876,7 @@ export const Settings: React.FC = () => {
             <div className="flex items-start gap-2 p-3 bg-card-surface/40 border border-border-hairline rounded-xl">
               <Shield className="text-text-muted shrink-0 mt-0.5" size={15} />
               <span className="font-sans text-[11px] text-text-muted leading-normal">
-                Veras browser domain checks use macOS Automation. You will be prompted to grant permission on matching domains. Denying access will skip captures on the browser for safety.
+                Vera's browser domain checks use macOS Automation. You will be prompted to grant permission on matching domains. Denying access will skip captures on the browser for safety.
               </span>
             </div>
 
@@ -1346,7 +949,7 @@ export const Settings: React.FC = () => {
                 },
                 {
                   label: "Screen Recording",
-                  hint: "Screen memory captures",
+                  hint: "Reads your screen to build work blocks. macOS re-confirms this roughly monthly — that's normal.",
                   granted: permScreenRecording,
                   pane: "screen_recording" as const,
                 },
