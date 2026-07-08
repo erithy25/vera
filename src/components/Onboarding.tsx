@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { settingsRepo, clientsRepo, projectsRepo } from "../lib/db";
 import { ollamaClient, PullProgress } from "../lib/ollama";
+import { parseEuroToCents } from "../lib/format";
 import { enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 
 interface OnboardingProps {
@@ -168,10 +169,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           setFirstError("Enter a client and a project name — or use the demo data.");
           return;
         }
-        const euros = rateInput.trim().replace(",", ".");
-        const rateCents = euros ? Math.round(parseFloat(euros) * 100) : null;
-        if (euros && (rateCents === null || isNaN(rateCents))) {
-          setFirstError("That hourly rate isn't a number.");
+        // parseEuroToCents rejects negatives and junk (shared with ClientsProjects).
+        const rateCents = parseEuroToCents(rateInput);
+        if (rateInput.trim() && rateCents === null) {
+          setFirstError("That hourly rate isn't a valid amount.");
           return;
         }
         const clientId = await clientsRepo.add(cn, null, rateCents);

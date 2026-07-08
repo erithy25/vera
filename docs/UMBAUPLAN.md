@@ -556,8 +556,12 @@ Summen gegen Fixture-Daten.
 **NEU GEBAUT — und zwar so:**
 - Lizenzierung: Merchant-of-Record (Paddle oder Lemon Squeezy — übernehmen
   EU-Umsatzsteuer). `src/lib/license.ts` (neu): Lizenzschlüssel-Eingabe,
-  Offline-Gnadenfrist 14 Tage, Validierung ist der **einzige**
-  Netzwerk-Call der App und wird auf der Website genau so dokumentiert.
+  Offline-Gnadenfrist 14 Tage. **Umgesetzt als vollständig offline
+  verifizierbarer Schlüssel** (ECDSA-P-256-Signatur, lokal gegen den
+  eingebetteten Public Key geprüft) — die Lizenzierung macht damit GAR
+  KEINEN Netzwerk-Call; der **einzige** Netzwerk-Call der App bleibt der
+  Update-Check. Der MoR liefert den signierten Schlüssel per E-Mail. Das
+  wird auf der Website genau so dokumentiert (noch stärker als geplant).
 - Trial: 14 Tage voll funktionsfähig; permanenter, unaufdringlicher Zähler
   "Vera hat dir bisher X € gefunden" (Summe zurückgeholter Zeit × Satz) —
   der Kauf-Trigger.

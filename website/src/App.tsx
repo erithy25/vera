@@ -5,11 +5,15 @@ import { useMemo, useState } from "react";
 // monochrome design. Structure per Umbauplan Schicht 0: hero with waitlist →
 // how it works → money calculator → privacy band → audiences → full waitlist
 // form → FAQ → footer. Site copy is ALWAYS English (owner decision).
-// The download button returns with the release (Schicht 6); /downloads and
-// /updater stay untouched for existing installs.
+// The public macOS download ships in Schicht 6 (DOWNLOAD_URL below);
+// /downloads and /updater are populated by scripts/release-mac.sh.
 // ---------------------------------------------------------------------------
 
 const REPO = "erithy25/vera";
+
+// Public download — the DMG released by scripts/release-mac.sh. Starting the
+// 14-day trial needs no account: download, launch, done.
+const DOWNLOAD_URL = "/downloads/Vera.dmg";
 
 // Waitlist endpoint (Formspree-compatible, accepts JSON POSTs). Set at build
 // time via VITE_WAITLIST_ENDPOINT — see website/README.md. Without an
@@ -393,6 +397,7 @@ interface Tier {
   features: string[];
   checkout: string;
   ctaLabel: string;
+  trial: boolean; // trial plans start via the download; Firm ships later (waitlist)
   highlight?: boolean;
   note?: string;
 }
@@ -411,7 +416,8 @@ const tiers: Tier[] = [
       "100% on-device — no account",
     ],
     checkout: CHECKOUT.solo,
-    ctaLabel: "Start free trial",
+    ctaLabel: "Download & start free trial",
+    trial: true,
   },
   {
     name: "Pro",
@@ -426,7 +432,8 @@ const tiers: Tier[] = [
       "Priority support",
     ],
     checkout: CHECKOUT.pro,
-    ctaLabel: "Start free trial",
+    ctaLabel: "Download & start free trial",
+    trial: true,
     highlight: true,
     note: "Integrations roll out with the Pro plan.",
   },
@@ -444,6 +451,7 @@ const tiers: Tier[] = [
     ],
     checkout: CHECKOUT.firm,
     ctaLabel: "Join the Firm waitlist",
+    trial: false,
     note: "Firm Edition ships with the Windows version.",
   },
 ];
@@ -485,9 +493,9 @@ function Pricing() {
             ))}
           </ul>
 
+          {/* Trial plans start via the download (no account); Firm → waitlist. */}
           <a
-            href={t.checkout || "#waitlist"}
-            {...(t.checkout ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+            href={t.trial ? DOWNLOAD_URL : "#waitlist"}
             className={`inline-flex items-center justify-center rounded-xl font-sans font-medium text-[14px] px-5 py-3 transition-all active:scale-[0.98] cursor-pointer no-underline ${
               t.highlight
                 ? "bg-text-primary text-card-surface hover:bg-text-muted"
@@ -496,6 +504,16 @@ function Pricing() {
           >
             {t.ctaLabel}
           </a>
+          {t.trial && t.checkout && (
+            <a
+              href={t.checkout}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-sans text-[12px] text-text-muted hover:text-text-primary text-center -mt-2 no-underline"
+            >
+              or buy {t.name} now →
+            </a>
+          )}
           {t.note && <span className="font-sans text-[11.5px] text-text-faint text-center -mt-2">{t.note}</span>}
         </div>
       ))}
@@ -625,8 +643,8 @@ export function App() {
             <a href="#private" className="hover:text-text-primary transition-colors">Privacy</a>
             <a href="#faq" className="hover:text-text-primary transition-colors">FAQ</a>
           </nav>
-          <a href="#waitlist" className="inline-flex items-center justify-center rounded-xl font-sans font-medium border border-border-hairline text-text-primary hover:bg-active-hover text-[13px] px-4 py-2 transition-all cursor-pointer no-underline">
-            Waitlist
+          <a href={DOWNLOAD_URL} className="inline-flex items-center justify-center rounded-xl font-sans font-medium bg-text-primary text-card-surface hover:bg-text-muted text-[13px] px-4 py-2 transition-all cursor-pointer no-underline">
+            Download
           </a>
         </div>
       </header>
@@ -637,7 +655,19 @@ export function App() {
           <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">{hero.eyebrow}</span>
           <h1 className="font-serif text-[clamp(40px,7.5vw,76px)] leading-[1.02] tracking-tight mt-5 max-w-[880px]">{hero.h1}</h1>
           <p className="font-sans text-[17px] sm:text-[19px] text-text-muted leading-relaxed max-w-[620px] mt-6">{hero.sub}</p>
-          <div className="mt-9 w-full flex justify-center">
+          <div className="mt-9 flex flex-col items-center gap-3">
+            <a
+              href={DOWNLOAD_URL}
+              className="inline-flex items-center justify-center gap-2 rounded-xl font-sans font-medium bg-text-primary text-card-surface hover:bg-text-muted text-[16px] px-7 py-3.5 transition-all active:scale-[0.98] cursor-pointer no-underline"
+            >
+              Download for macOS
+            </a>
+            <span className="font-sans text-[12px] text-text-faint">
+              14-day free trial · no account · Apple Silicon
+            </span>
+          </div>
+          <div className="mt-10 w-full flex flex-col items-center gap-2">
+            <span className="font-sans text-[13px] text-text-muted">Prefer email updates first?</span>
             <HeroWaitlist variant={variant} />
           </div>
         </section>

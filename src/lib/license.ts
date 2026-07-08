@@ -2,9 +2,11 @@ import { settingsRepo } from "./db";
 import {
   parseLicenseKey,
   entitlementState,
+  licenseState,
   b64urlToBytes,
   Entitlement,
   LicensePayload,
+  ParsedLicense,
   Plan,
 } from "./license-core";
 import { verifyEcdsaP256 } from "./license-crypto";
@@ -20,11 +22,12 @@ import { verifyEcdsaP256 } from "./license-crypto";
 // To go live, the owner replaces PUBLIC_KEY_B64URL with the public key of
 // their production signing keypair (the private half signs
 // {e,p,iat,exp} → base64url payload, then the ASCII payload bytes) and wires
-// the webhook. Until then the trial covers every install.
+// the webhook. Until then no key verifies, so every install runs on the
+// 14-day trial (after which billing export locks until a real key ships).
 const PUBLIC_KEY_B64URL =
   "BLV3HU-hUkI7mazHFL9VmN5sWd7j3UM_bDSlwgoNperCnVmOvctBUabNiDtkKNJ5s_z3_PTrF-24IIgIMtff_TA";
 
-export type { Entitlement, Plan };
+export type { Entitlement };
 
 export const PLAN_LABELS: Record<Plan, string> = {
   solo: "Solo",
@@ -32,16 +35,21 @@ export const PLAN_LABELS: Record<Plan, string> = {
   firm: "Firm",
 };
 
-/** Verify a key's signature offline. false for any malformed/forged key. */
-export async function verifyLicenseKey(raw: string): Promise<boolean> {
-  const parsed = parseLicenseKey(raw);
-  if (!parsed) return false;
+/** Verify an already-parsed key's signature offline (no re-parse). */
+async function verifyParsed(parsed: ParsedLicense): Promise<boolean> {
   try {
     const pub = b64urlToBytes(PUBLIC_KEY_B64URL);
     return await verifyEcdsaP256(pub, parsed.signedMessage, parsed.signature);
   } catch {
     return false;
   }
+}
+
+/** Verify a key's signature offline. false for any malformed/forged key. */
+export async function verifyLicenseKey(raw: string): Promise<boolean> {
+  const parsed = parseLicenseKey(raw);
+  if (!parsed) return false;
+  return verifyParsed(parsed);
 }
 
 /** The current entitlement: trial / licensed / grace / expired. */
@@ -55,8 +63,7 @@ export async function currentEntitlement(): Promise<Entitlement> {
   if (key) {
     const parsed = parseLicenseKey(key);
     if (parsed) {
-      const verified = await verifyLicenseKey(key);
-      license = { payload: parsed.payload, verified };
+      license = { payload: parsed.payload, verified: await verifyParsed(parsed) };
     }
   }
 
@@ -67,9 +74,14 @@ export async function currentEntitlement(): Promise<Entitlement> {
 export async function activateLicense(raw: string): Promise<string | null> {
   const key = raw.trim();
   if (!key) return "Enter your license key.";
-  if (!parseLicenseKey(key)) return "That doesn't look like a Vera license key.";
-  const ok = await verifyLicenseKey(key);
-  if (!ok) return "This license key is not valid.";
+  const parsed = parseLicenseKey(key);
+  if (!parsed) return "That doesn't look like a Vera license key.";
+  if (!(await verifyParsed(parsed))) return "This license key is not valid.";
+  // Reject a genuine but already-expired (past grace) key so it can never
+  // silently downgrade an active trial or store a dead key.
+  if (!licenseState(parsed.payload, Date.now()).entitled) {
+    return "This license key has expired. Renew it to continue exporting.";
+  }
   await settingsRepo.setLicenseKey(key);
   return null;
 }

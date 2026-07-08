@@ -56,7 +56,7 @@ export function parseLicenseKey(raw: string): ParsedLicense | null {
   if (dot <= 0 || dot === key.length - 1) return null;
   const payloadB64 = key.slice(0, dot);
   const sigB64 = key.slice(dot + 1);
-  if (/[.]/.test(sigB64)) return null; // exactly one separator
+  if (sigB64.includes(".")) return null; // exactly one separator
 
   let payload: LicensePayload;
   let signature: Uint8Array;
@@ -112,43 +112,7 @@ export interface EntitlementInput {
 
 const daysCeil = (ms: number) => Math.max(0, Math.ceil(ms / DAY_MS));
 
-export function entitlementState(input: EntitlementInput): Entitlement {
-  const { nowMs, firstRunAtMs, license } = input;
-
-  if (license && license.verified) {
-    const { payload } = license;
-    const expiresAt = payload.exp === null ? null : payload.exp * 1000;
-    if (expiresAt === null || nowMs <= expiresAt) {
-      return {
-        status: "licensed",
-        plan: payload.p,
-        entitled: true,
-        trialDaysLeft: 0,
-        graceDaysLeft: 0,
-        expiresAt,
-      };
-    }
-    const graceEnd = expiresAt + GRACE_DAYS * DAY_MS;
-    if (nowMs <= graceEnd) {
-      return {
-        status: "grace",
-        plan: payload.p,
-        entitled: true,
-        trialDaysLeft: 0,
-        graceDaysLeft: daysCeil(graceEnd - nowMs),
-        expiresAt,
-      };
-    }
-    return {
-      status: "expired",
-      plan: payload.p,
-      entitled: false,
-      trialDaysLeft: 0,
-      graceDaysLeft: 0,
-      expiresAt,
-    };
-  }
-
+function trialState(nowMs: number, firstRunAtMs: number): Entitlement {
   const trialEnd = firstRunAtMs + TRIAL_DAYS * DAY_MS;
   if (nowMs <= trialEnd) {
     return {
@@ -168,6 +132,43 @@ export function entitlementState(input: EntitlementInput): Entitlement {
     graceDaysLeft: 0,
     expiresAt: null,
   };
+}
+
+/** The entitlement a verified license alone confers (licensed / grace / expired). */
+export function licenseState(payload: LicensePayload, nowMs: number): Entitlement {
+  const expiresAt = payload.exp === null ? null : payload.exp * 1000;
+  if (expiresAt === null || nowMs <= expiresAt) {
+    return { status: "licensed", plan: payload.p, entitled: true, trialDaysLeft: 0, graceDaysLeft: 0, expiresAt };
+  }
+  const graceEnd = expiresAt + GRACE_DAYS * DAY_MS;
+  if (nowMs <= graceEnd) {
+    return {
+      status: "grace",
+      plan: payload.p,
+      entitled: true,
+      trialDaysLeft: 0,
+      graceDaysLeft: daysCeil(graceEnd - nowMs),
+      expiresAt,
+    };
+  }
+  return { status: "expired", plan: payload.p, entitled: false, trialDaysLeft: 0, graceDaysLeft: 0, expiresAt };
+}
+
+export function entitlementState(input: EntitlementInput): Entitlement {
+  const { nowMs, firstRunAtMs, license } = input;
+  const trial = trialState(nowMs, firstRunAtMs);
+
+  if (license && license.verified) {
+    const lic = licenseState(license.payload, nowMs);
+    // A license that grants access always wins. But an expired license must
+    // never DOWNGRADE a user who is still inside their free trial (e.g. a
+    // returning customer pasting an old key on a fresh install) — keep the
+    // more favorable of the two.
+    if (lic.entitled || !trial.entitled) return lic;
+    return trial;
+  }
+
+  return trial;
 }
 
 // ---------- Buy trigger ----------

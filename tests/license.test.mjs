@@ -112,6 +112,26 @@ await check("entitlement: expired subscription enters grace, then locks", () => 
   assert.equal(locked.entitled, false);
 });
 
+await check("entitlement: an expired license never DOWNGRADES an active trial", () => {
+  const firstRunAtMs = 1_000_000_000_000;
+  const expSec = 900_000_000; // expired long before the fresh trial
+  const e = entitlementState({
+    nowMs: firstRunAtMs + 2 * DAY, // day 2 of a fresh 14-day trial
+    firstRunAtMs,
+    license: { payload: { e: "a@b.com", p: "pro", iat: 1, exp: expSec }, verified: true },
+  });
+  assert.equal(e.status, "trial"); // the more favorable state wins
+  assert.equal(e.entitled, true);
+  // But once the trial is also over, the expired license shows through.
+  const later = entitlementState({
+    nowMs: firstRunAtMs + 30 * DAY,
+    firstRunAtMs,
+    license: { payload: { e: "a@b.com", p: "pro", iat: 1, exp: expSec }, verified: true },
+  });
+  assert.equal(later.status, "expired");
+  assert.equal(later.entitled, false);
+});
+
 await check("entitlement: an UNVERIFIED license never grants access (falls back to trial)", () => {
   const firstRunAtMs = 1_000_000_000_000;
   const e = entitlementState({
