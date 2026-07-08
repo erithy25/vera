@@ -12,5 +12,6 @@ Tauri 2 desktop app (macOS-only: Objective-C/Swift natives, CoreGraphics/AppKit)
 
   (Insert the current working branch. `npm install` is included so new JS deps are present — `tauri build` does not install them. The `beforeBuildCommand` also runs `npm install` as a safety net. The DMG opens the drag-into-Applications window.)
 - No UI/design changes unless explicitly requested.
+- **Website (`website/`): all copy is ALWAYS English** — every new section, page, and text change (owner decision, July 2026).
 - Develop on the designated claude/* branch; commit and push after each task.
 - The app only compiles on macOS (frameworks + swiftc). In Linux containers: verify the frontend with `npx tsc --noEmit` + `npm run build`, and prove native/SQL logic with standalone replica tests.

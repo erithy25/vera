@@ -91,6 +91,10 @@ Beweis beim Nutzer.
 
 ### Schicht 0 — Website-Abriss & Neubau (Positionierung nach außen)
 
+**Sprachregel (Owner-Entscheidung, Juli 2026): Alle Website-Texte sind
+IMMER Englisch.** Hero-Varianten heißen `money`/`privacy`, Payload-Felder
+`firm_interest`/`source`.
+
 Die alte Marketing-Site ("dein lokaler KI-Begleiter") wird vollständig
 ersetzt. Parallel (kein Code): 10–15 Interviews mit Zielkunden; eine
 Kernfrage: "Wie erfasst du heute deine Zeit, und was entgeht dir dadurch —

@@ -1,32 +1,31 @@
 import { useMemo, useState } from "react";
 
 // ---------------------------------------------------------------------------
-// Vera Marketing-Site — Landingpage für den Abrechnungs-Copiloten, in Veras
-// warmem Monochrom-Design. Aufbau nach Umbauplan Schicht 0: Hero mit
-// Warteliste → So funktioniert es → Geld-Rechner → Privacy-Band →
-// Zielgruppen → Warteliste (voll) → FAQ → Footer.
-// Der Download-Button erscheint erst wieder mit dem Release (Schicht 6);
-// /downloads und /updater bleiben für bestehende Installationen unberührt.
+// Vera marketing site — landing page for the billing copilot, in Vera's warm
+// monochrome design. Structure per Umbauplan Schicht 0: hero with waitlist →
+// how it works → money calculator → privacy band → audiences → full waitlist
+// form → FAQ → footer. Site copy is ALWAYS English (owner decision).
+// The download button returns with the release (Schicht 6); /downloads and
+// /updater stay untouched for existing installs.
 // ---------------------------------------------------------------------------
 
 const REPO = "erithy25/vera";
 
-// Wartelisten-Endpoint (Formspree-kompatibel, nimmt JSON-POSTs an).
-// Wird beim Build über die Umgebungsvariable VITE_WAITLIST_ENDPOINT gesetzt —
-// siehe website/README.md. Ohne Endpoint zeigt das Formular einen ehrlichen
-// Fehler statt Eingaben stillschweigend zu verwerfen.
+// Waitlist endpoint (Formspree-compatible, accepts JSON POSTs). Set at build
+// time via VITE_WAITLIST_ENDPOINT — see website/README.md. Without an
+// endpoint the form shows an honest error instead of silently dropping input.
 const WAITLIST_ENDPOINT: string = import.meta.env.VITE_WAITLIST_ENDPOINT ?? "";
 
-// A/B-Variante der Hero-Botschaft: Standard "geld", per ?v=privacy die
-// Privacy-Variante. Die Variante wandert mit in jede Wartelisten-Anmeldung.
-function getVariant(): "geld" | "privacy" {
-  if (typeof window === "undefined") return "geld";
+// A/B hero variant: default "money", ?v=privacy switches to the privacy
+// angle. The variant travels with every waitlist signup.
+function getVariant(): "money" | "privacy" {
+  if (typeof window === "undefined") return "money";
   return new URLSearchParams(window.location.search).get("v") === "privacy"
     ? "privacy"
-    : "geld";
+    : "money";
 }
 
-// --- Icons (inline, Lucide-artige Striche — passend zur Desktop-App) ---
+// --- Icons (inline, Lucide-style strokes — matches the desktop app) ---
 
 const VMark = ({ size = 22 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -61,7 +60,7 @@ const CheckIcon = ({ size = 16 }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" /></svg>
 );
 
-// --- Warteliste ---
+// --- Waitlist ---
 
 type SubmitState = "idle" | "sending" | "ok" | "error";
 
@@ -69,8 +68,8 @@ interface WaitlistPayload {
   email: string;
   variant: string;
   segment: string[];
-  kanzlei_interesse: boolean;
-  quelle: string;
+  firm_interest: boolean;
+  source: string;
 }
 
 async function submitWaitlist(payload: WaitlistPayload): Promise<boolean> {
@@ -87,7 +86,7 @@ async function submitWaitlist(payload: WaitlistPayload): Promise<boolean> {
   }
 }
 
-// Kompaktes E-Mail-Feld für den Hero — meldet direkt an (Variante inklusive).
+// Compact email field for the hero — signs up directly (variant included).
 function HeroWaitlist({ variant }: { variant: string }) {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<SubmitState>("idle");
@@ -100,8 +99,8 @@ function HeroWaitlist({ variant }: { variant: string }) {
       email,
       variant,
       segment: [],
-      kanzlei_interesse: false,
-      quelle: "hero",
+      firm_interest: false,
+      source: "hero",
     });
     setState(ok ? "ok" : "error");
   }
@@ -109,7 +108,7 @@ function HeroWaitlist({ variant }: { variant: string }) {
   if (state === "ok") {
     return (
       <div className="flex items-center gap-2 font-sans text-[15px] text-text-primary bg-card-surface border border-border-hairline rounded-xl px-5 py-3">
-        <CheckIcon /> Du stehst auf der Warteliste — wir melden uns.
+        <CheckIcon /> You're on the waitlist — we'll be in touch.
       </div>
     );
   }
@@ -122,8 +121,8 @@ function HeroWaitlist({ variant }: { variant: string }) {
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="deine@email.de"
-          aria-label="E-Mail-Adresse für die Warteliste"
+          placeholder="you@email.com"
+          aria-label="Email address for the waitlist"
           className="flex-1 min-w-0 h-12 px-4 rounded-xl border border-border-hairline bg-card-surface font-sans text-[15px] text-text-primary placeholder:text-text-faint outline-none focus:border-text-muted"
         />
         <button
@@ -131,34 +130,34 @@ function HeroWaitlist({ variant }: { variant: string }) {
           disabled={state === "sending"}
           className="h-12 px-5 rounded-xl bg-text-primary text-card-surface font-sans font-medium text-[15px] cursor-pointer transition-all active:scale-[0.98] disabled:opacity-60 whitespace-nowrap"
         >
-          {state === "sending" ? "Sende…" : "Auf die Warteliste"}
+          {state === "sending" ? "Sending…" : "Join the waitlist"}
         </button>
       </div>
       {state === "error" && (
         <span className="font-sans text-[13px] text-text-muted">
-          Das hat gerade nicht geklappt — bitte versuch es unten im Formular noch einmal.
+          That didn't go through — please try again in the form below.
         </span>
       )}
       <span className="font-sans text-[12px] text-text-faint">
-        Beta zuerst für die Warteliste · macOS · kein Account nötig
+        Beta ships to the waitlist first · macOS · no account required
       </span>
     </form>
   );
 }
 
-// Volles Wartelisten-Formular mit Segment- und Kanzlei-Abfrage.
+// Full waitlist form with segment and firm-edition questions.
 function WaitlistForm({ variant }: { variant: string }) {
   const [email, setEmail] = useState("");
   const [segments, setSegments] = useState<string[]>([]);
-  const [kanzlei, setKanzlei] = useState(false);
+  const [firm, setFirm] = useState(false);
   const [state, setState] = useState<SubmitState>("idle");
 
   const segmentOptions = [
-    "Agentur / Studio",
-    "Beratung / Consulting",
+    "Agency / Studio",
+    "Consulting",
     "Freelancer",
-    "Kanzlei / Steuerberatung",
-    "Anderes",
+    "Law / Tax firm",
+    "Other",
   ];
 
   function toggleSegment(s: string) {
@@ -173,8 +172,8 @@ function WaitlistForm({ variant }: { variant: string }) {
       email,
       variant,
       segment: segments,
-      kanzlei_interesse: kanzlei,
-      quelle: "formular",
+      firm_interest: firm,
+      source: "form",
     });
     setState(ok ? "ok" : "error");
   }
@@ -183,10 +182,10 @@ function WaitlistForm({ variant }: { variant: string }) {
     return (
       <div className="card-style px-8 py-12 flex flex-col items-center text-center gap-3">
         <span className="w-10 h-10 rounded-full bg-text-primary text-card-surface flex items-center justify-center"><CheckIcon size={18} /></span>
-        <h3 className="font-serif text-[26px] text-text-primary">Du bist dabei.</h3>
+        <h3 className="font-serif text-[26px] text-text-primary">You're in.</h3>
         <p className="font-sans text-[15px] text-text-muted max-w-[420px] leading-relaxed">
-          Wir melden uns, sobald deine Beta bereitsteht. Bis dahin: Wenn du uns 15 Minuten
-          zu deiner heutigen Zeiterfassung erzählen magst, antworte einfach auf die Bestätigungs-Mail.
+          We'll reach out as soon as your beta is ready. Until then: if you're up for
+          15 minutes on how you track time today, just reply to the confirmation email.
         </p>
       </div>
     );
@@ -195,20 +194,20 @@ function WaitlistForm({ variant }: { variant: string }) {
   return (
     <form onSubmit={onSubmit} className="card-style px-6 sm:px-10 py-10 flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <label htmlFor="wl-email" className="font-sans text-[13px] font-medium text-text-primary">E-Mail</label>
+        <label htmlFor="wl-email" className="font-sans text-[13px] font-medium text-text-primary">Email</label>
         <input
           id="wl-email"
           type="email"
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="deine@email.de"
+          placeholder="you@email.com"
           className="h-12 px-4 rounded-xl border border-border-hairline bg-bg-warm font-sans text-[15px] text-text-primary placeholder:text-text-faint outline-none focus:border-text-muted"
         />
       </div>
 
       <div className="flex flex-col gap-2.5">
-        <span className="font-sans text-[13px] font-medium text-text-primary">Womit verdienst du dein Geld? <span className="text-text-faint font-normal">(optional)</span></span>
+        <span className="font-sans text-[13px] font-medium text-text-primary">What do you bill for? <span className="text-text-faint font-normal">(optional)</span></span>
         <div className="flex flex-wrap gap-2">
           {segmentOptions.map((s) => (
             <button
@@ -231,14 +230,14 @@ function WaitlistForm({ variant }: { variant: string }) {
       <label className="flex items-start gap-3 cursor-pointer select-none">
         <input
           type="checkbox"
-          checked={kanzlei}
-          onChange={(e) => setKanzlei(e.target.checked)}
+          checked={firm}
+          onChange={(e) => setFirm(e.target.checked)}
           className="mt-1 w-4 h-4 cursor-pointer"
           style={{ accentColor: "#1c1c1a" }}
         />
         <span className="font-sans text-[13.5px] text-text-muted leading-relaxed">
-          Ich interessiere mich für die <strong className="text-text-primary font-medium">Kanzlei-Edition</strong> (Windows,
-          DATEV-/RA-MICRO-Export) und möchte informiert werden, sobald sie kommt.
+          I'm interested in the <strong className="text-text-primary font-medium">Firm Edition</strong> (Windows,
+          DATEV/RA-MICRO export) and want to hear when it ships.
         </span>
       </label>
 
@@ -247,28 +246,28 @@ function WaitlistForm({ variant }: { variant: string }) {
         disabled={state === "sending"}
         className="h-12 rounded-xl bg-text-primary text-card-surface font-sans font-medium text-[15px] cursor-pointer transition-all active:scale-[0.98] disabled:opacity-60"
       >
-        {state === "sending" ? "Sende…" : "Auf die Warteliste"}
+        {state === "sending" ? "Sending…" : "Join the waitlist"}
       </button>
 
       {state === "error" && (
         <span className="font-sans text-[13px] text-text-muted text-center">
-          Die Anmeldung ist gerade nicht erreichbar. Bitte versuch es in ein paar Minuten erneut.
+          Signup isn't reachable right now. Please try again in a few minutes.
         </span>
       )}
       <span className="font-sans text-[12px] text-text-faint text-center">
-        Nur für die Warteliste — keine Werbung, jederzeit austragbar.
+        Waitlist only — no marketing, unsubscribe anytime.
       </span>
     </form>
   );
 }
 
-// --- Produkt-Vorschau: der Tages-Review, wie ihn die neue Vera zeigt ---
+// --- Product preview: the daily review as the new Vera shows it ---
 
 function VeraWindow() {
   const blocks = [
-    { zeit: "09:04 – 10:38", app: "Figma · kunde-nord.de", projekt: "Nordwind — Website Relaunch", konfidenz: "94 %", dauer: "1 h 34 m" },
-    { zeit: "10:41 – 11:12", app: "Mail · Angebot_v2.pdf", projekt: "Bergmann Consulting — Angebot", konfidenz: "88 %", dauer: "31 m" },
-    { zeit: "11:15 – 11:29", app: "Slack · #kunde-nord", projekt: "Nordwind — Website Relaunch", konfidenz: "91 %", dauer: "14 m" },
+    { time: "09:04 – 10:38", app: "Figma · northwind-client.com", project: "Northwind — Website Relaunch", confidence: "94%", duration: "1 h 34 m" },
+    { time: "10:41 – 11:12", app: "Mail · Proposal_v2.pdf", project: "Bergman Consulting — Proposal", confidence: "88%", duration: "31 m" },
+    { time: "11:15 – 11:29", app: "Slack · #client-northwind", project: "Northwind — Website Relaunch", confidence: "91%", duration: "14 m" },
   ];
   return (
     <div className="relative w-full max-w-[780px] mx-auto">
@@ -280,30 +279,30 @@ function VeraWindow() {
             <span className="w-3 h-3 rounded-full bg-[#E6E4DD]" />
             <span className="w-3 h-3 rounded-full bg-[#E6E4DD]" />
           </div>
-          <span className="absolute left-1/2 -translate-x-1/2 font-serif text-[14px] text-text-muted">Vera — Heute</span>
+          <span className="absolute left-1/2 -translate-x-1/2 font-serif text-[14px] text-text-muted">Vera — Today</span>
         </div>
         <div className="bg-bg-warm px-5 sm:px-8 py-7 flex flex-col gap-3">
           {blocks.map((b) => (
-            <div key={b.zeit} className="card-style px-4 sm:px-5 py-3.5 flex items-center gap-4">
+            <div key={b.time} className="card-style px-4 sm:px-5 py-3.5 flex items-center gap-4">
               <div className="flex flex-col min-w-[92px] shrink-0">
-                <span className="font-sans text-[12px] text-text-muted tabular-nums">{b.zeit}</span>
-                <span className="font-sans text-[11px] text-text-faint tabular-nums">{b.dauer}</span>
+                <span className="font-sans text-[12px] text-text-muted tabular-nums">{b.time}</span>
+                <span className="font-sans text-[11px] text-text-faint tabular-nums">{b.duration}</span>
               </div>
               <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                <span className="font-sans text-[13px] text-text-primary font-medium truncate">{b.projekt}</span>
+                <span className="font-sans text-[13px] text-text-primary font-medium truncate">{b.project}</span>
                 <span className="font-sans text-[12px] text-text-faint truncate">{b.app}</span>
               </div>
-              <span className="hidden sm:inline font-sans text-[11px] px-2 py-1 rounded bg-active-hover text-text-muted border border-border-hairline shrink-0">{b.konfidenz}</span>
+              <span className="hidden sm:inline font-sans text-[11px] px-2 py-1 rounded bg-active-hover text-text-muted border border-border-hairline shrink-0">{b.confidence}</span>
             </div>
           ))}
           <div className="card-style px-4 sm:px-5 py-4 flex flex-col gap-2">
-            <span className="font-sans text-[11px] font-semibold text-text-faint tracking-widest uppercase">Entwurf · Leistungsbeschreibung</span>
+            <span className="font-sans text-[11px] font-semibold text-text-faint tracking-widest uppercase">Draft · Billing narrative</span>
             <p className="font-serif text-[15.5px] text-text-muted italic leading-relaxed">
-              „Überarbeitung der Startseiten-Layouts und Abstimmung der Designvarianten für den Website-Relaunch; Rückfragen des Kunden im Projektkanal beantwortet.“
+              "Revised homepage layouts and aligned design variants for the website relaunch; answered client questions in the project channel."
             </p>
             <div className="flex items-center justify-between mt-1">
-              <span className="font-sans text-[12px] text-text-faint">Nordwind — Website Relaunch · 1 h 48 m · 216 €</span>
-              <span className="font-sans text-[12px] px-3 py-1.5 rounded-lg bg-text-primary text-card-surface">Tag abschließen</span>
+              <span className="font-sans text-[12px] text-text-faint">Northwind — Website Relaunch · 1 h 48 m · €216</span>
+              <span className="font-sans text-[12px] px-3 py-1.5 rounded-lg bg-text-primary text-card-surface">Close the day</span>
             </div>
           </div>
         </div>
@@ -312,20 +311,20 @@ function VeraWindow() {
   );
 }
 
-// --- Geld-Rechner ---
+// --- Money calculator ---
 
 function formatEuro(n: number): string {
-  return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
+  return new Intl.NumberFormat("en", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
 }
 
 function MoneyCalculator() {
-  const [stundensatz, setStundensatz] = useState(120);
-  const [minuten, setMinuten] = useState(20);
-  const TAGE_PRO_JAHR = 220; // abrechenbare Arbeitstage
+  const [rate, setRate] = useState(120);
+  const [minutes, setMinutes] = useState(20);
+  const DAYS_PER_YEAR = 220; // billable working days
 
-  const proJahr = useMemo(
-    () => Math.round((stundensatz * minuten * TAGE_PRO_JAHR) / 60),
-    [stundensatz, minuten]
+  const perYear = useMemo(
+    () => Math.round((rate * minutes * DAYS_PER_YEAR) / 60),
+    [rate, minutes]
   );
 
   return (
@@ -333,25 +332,25 @@ function MoneyCalculator() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
-            <label htmlFor="satz" className="font-sans text-[13px] font-medium text-text-primary">Dein Stundensatz</label>
-            <span className="font-serif text-[22px] text-text-primary tabular-nums">{formatEuro(stundensatz)}</span>
+            <label htmlFor="rate" className="font-sans text-[13px] font-medium text-text-primary">Your hourly rate</label>
+            <span className="font-serif text-[22px] text-text-primary tabular-nums">{formatEuro(rate)}</span>
           </div>
           <input
-            id="satz"
+            id="rate"
             type="range"
             min={30}
             max={400}
             step={5}
-            value={stundensatz}
-            onChange={(e) => setStundensatz(Number(e.target.value))}
+            value={rate}
+            onChange={(e) => setRate(Number(e.target.value))}
             className="w-full cursor-pointer"
             style={{ accentColor: "#1c1c1a" }}
           />
         </div>
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
-            <label htmlFor="min" className="font-sans text-[13px] font-medium text-text-primary">Vergessene Minuten pro Tag</label>
-            <span className="font-serif text-[22px] text-text-primary tabular-nums">{minuten} min</span>
+            <label htmlFor="min" className="font-sans text-[13px] font-medium text-text-primary">Forgotten minutes per day</label>
+            <span className="font-serif text-[22px] text-text-primary tabular-nums">{minutes} min</span>
           </div>
           <input
             id="min"
@@ -359,17 +358,17 @@ function MoneyCalculator() {
             min={5}
             max={60}
             step={5}
-            value={minuten}
-            onChange={(e) => setMinuten(Number(e.target.value))}
+            value={minutes}
+            onChange={(e) => setMinutes(Number(e.target.value))}
             className="w-full cursor-pointer"
             style={{ accentColor: "#1c1c1a" }}
           />
         </div>
       </div>
       <div className="flex flex-col items-center text-center gap-1 border-t border-border-hairline pt-8">
-        <span className="font-sans text-[13px] text-text-muted">Nicht erfasste Zeit kostet dich pro Jahr</span>
-        <span className="font-serif text-[clamp(40px,7vw,64px)] leading-none tracking-tight text-text-primary tabular-nums">{formatEuro(proJahr)}</span>
-        <span className="font-sans text-[12px] text-text-faint mt-2">Annahme: {TAGE_PRO_JAHR} abrechenbare Tage im Jahr. Kurze Anrufe, Slack-Antworten, „nur schnell drübergeschaut“ — genau die Zeit, die in manueller Erfassung verloren geht.</span>
+        <span className="font-sans text-[13px] text-text-muted">Untracked time costs you every year</span>
+        <span className="font-serif text-[clamp(40px,7vw,64px)] leading-none tracking-tight text-text-primary tabular-nums">{formatEuro(perYear)}</span>
+        <span className="font-sans text-[12px] text-text-faint mt-2">Assumes {DAYS_PER_YEAR} billable days a year. Quick calls, Slack replies, "just a quick look" — exactly the time manual tracking loses.</span>
       </div>
     </div>
   );
@@ -379,32 +378,32 @@ function MoneyCalculator() {
 
 const faqs = [
   {
-    q: "Verlassen meine Daten wirklich nie das Gerät?",
-    a: "Ja — und zwar architektonisch, nicht als Versprechen. Erfassung, Texterkennung, Datenbank und das KI-Modell (über Ollama) laufen vollständig auf deinem Mac; die Datenbank ist verschlüsselt. Es gibt keinen Account, keinen Server, keine Telemetrie. Der einzige Netzwerk-Kontakt der App ist die Update-Prüfung — und später die Lizenzprüfung beim Kauf.",
+    q: "Does my data really never leave the device?",
+    a: "Yes — by architecture, not by promise. Capture, text recognition, the database and the AI model (via Ollama) run entirely on your Mac; the database is encrypted. There is no account, no server, no telemetry. The app's only network contact is the update check — and later the license check when you buy.",
   },
   {
-    q: "Welche Berechtigungen braucht Vera?",
-    a: "Bildschirmaufnahme und Bedienungshilfen, damit Vera Fenster und Inhalte lokal auswerten kann. macOS fragt diese Freigabe aus Sicherheitsgründen etwa einmal im Monat neu ab — das ist normal, Vera weist dich rechtzeitig darauf hin und erklärt jeden Schritt.",
+    q: "Which permissions does Vera need?",
+    a: "Screen recording and accessibility, so Vera can evaluate windows and content locally. macOS re-confirms this permission roughly once a month for security reasons — that's normal; Vera points it out in time and explains every step.",
   },
   {
-    q: "Was sieht Vera — und was nicht?",
-    a: "Vera wertet aus, in welcher App, welchem Dokument und auf welcher Seite du arbeitest, um daraus Zeitblöcke zu bauen. Passwort-Manager sind ab Werk ausgeschlossen; eigene Apps und Domains kannst du jederzeit ausschließen, sensible Muster (Karten, IBANs, Schlüssel) werden automatisch geschwärzt, und mit einem Klick pausierst du die Erfassung komplett. Rohdaten verfallen nach einstellbarer Frist — deine Zeitblöcke bleiben.",
+    q: "What does Vera see — and what doesn't it?",
+    a: "Vera works out which app, document and page you're working in to build time blocks from it. Password managers are excluded out of the box; you can exclude your own apps and domains anytime, sensitive patterns (cards, IBANs, keys) are redacted automatically, and one click pauses capture entirely. Raw data expires after a configurable period — your time blocks remain.",
   },
   {
-    q: "Brauche ich dafür Extra-Hardware oder ein Abo bei einem KI-Anbieter?",
-    a: "Nein. Vera nutzt Ollama (kostenlos) mit einem lokalen Modell und richtet das beim Start mit dir ein. Empfohlen ist ein Mac mit Apple Silicon; je mehr Arbeitsspeicher, desto besser die Formulierungen.",
+    q: "Do I need extra hardware or an AI provider subscription?",
+    a: "No. Vera uses Ollama (free) with a local model and sets it up with you on first launch. A Mac with Apple Silicon is recommended; the more RAM, the better the narratives.",
   },
   {
-    q: "Funktioniert Vera offline?",
-    a: "Ja. Erfassen, Zuordnen und Formulieren funktionieren ohne Internetverbindung — es gibt schlicht nichts, was eine Verbindung bräuchte.",
+    q: "Does Vera work offline?",
+    a: "Yes. Capturing, assigning and drafting work without an internet connection — there's simply nothing that would need one.",
   },
   {
-    q: "Was wird Vera kosten?",
-    a: "Geplant ist ein Abo ab 19 € pro Monat — eine einzige wiedergefundene Stunde zahlt davon mehrere Monate. Die Warteliste bekommt die Beta zuerst und einen Frühbucher-Preis.",
+    q: "What will Vera cost?",
+    a: "Planned is a subscription from €19 per month — a single recovered hour pays for several months of it. The waitlist gets the beta first and an early-bird price.",
   },
   {
-    q: "Ich arbeite in einer Kanzlei auf Windows — was ist mit mir?",
-    a: "Die Kanzlei-Edition (Windows, DATEV-/RA-MICRO-Export, 6-Minuten-Taktung) ist in Vorbereitung. Setz im Wartelisten-Formular den Haken bei Kanzlei-Edition, dann gehörst du zu den Ersten, die sie testen.",
+    q: "I work at a law firm on Windows — what about me?",
+    a: "The Firm Edition (Windows, DATEV/RA-MICRO export, 6-minute increments) is in the works. Tick the Firm Edition box in the waitlist form and you'll be among the first to test it.",
   },
 ];
 
@@ -423,57 +422,57 @@ function FAQItem({ q, a }: { q: string; a: string }) {
   );
 }
 
-// --- Seite ---
+// --- Page ---
 
 const steps = [
   {
     n: "01",
     icon: <ClockIcon />,
-    title: "Erfassen",
-    body: "Vera läuft leise im Hintergrund und baut aus deinem Arbeitstag lückenlose Zeitblöcke — lokal und verschlüsselt, ohne Timer, ohne Zettel.",
+    title: "Capture",
+    body: "Vera runs quietly in the background and turns your workday into seamless time blocks — local and encrypted, no timers, no sticky notes.",
   },
   {
     n: "02",
     icon: <TagIcon />,
-    title: "Zuordnen",
-    body: "Ein lokales KI-Modell erkennt am Inhalt, für welchen Kunden und welches Projekt ein Block war — und lernt aus jeder Korrektur.",
+    title: "Assign",
+    body: "A local AI model recognizes from the content which client and project a block belongs to — and learns from every correction.",
   },
   {
     n: "03",
     icon: <ReceiptIcon />,
-    title: "Abrechnen",
-    body: "Vera schreibt abrechnungsfertige Leistungsbeschreibungen. Du bestätigst in drei Minuten deinen Tag und exportierst in dein Abrechnungssystem.",
+    title: "Bill",
+    body: "Vera writes ready-to-bill narratives. You confirm your day in three minutes and export straight into your billing system.",
   },
 ];
 
-const zielgruppen = [
+const audiences = [
   {
     icon: <BriefcaseIcon />,
-    title: "Agenturen & Studios",
-    body: "Projektwechsel im Minutentakt, Retainer und Festpreise nebeneinander — Vera hält fest, wohin die Stunden wirklich gehen, und liefert saubere Nachweise für jeden Kunden.",
+    title: "Agencies & studios",
+    body: "Project switches by the minute, retainers and fixed fees side by side — Vera keeps track of where the hours really go and delivers clean records for every client.",
   },
   {
     icon: <CompassIcon />,
-    title: "Beratungen & Consultants",
-    body: "Zwischen Calls, Decks und Mandanten-Mails verdunstet abrechenbare Zeit. Vera rekonstruiert den Tag inhaltlich und macht daraus belastbare, formulierte Einträge.",
+    title: "Consultancies & consultants",
+    body: "Between calls, decks and client emails, billable time evaporates. Vera reconstructs the day from its content and turns it into solid, well-worded entries.",
   },
   {
     icon: <PenIcon />,
-    title: "Freelancer",
-    body: "Du willst arbeiten, nicht Buch führen. Vera erfasst nebenbei, du bestätigst abends — und keine halbe Stunde „kurz noch was gefixt“ bleibt mehr unbezahlt.",
+    title: "Freelancers",
+    body: "You want to work, not keep books. Vera captures on the side, you confirm in the evening — and no half hour of \"quickly fixed something\" goes unpaid anymore.",
   },
 ];
 
 const heroCopy = {
-  geld: {
-    eyebrow: "Automatische Zeiterfassung für Abrechner",
-    h1: "Vera holt dir verlorene abrechenbare Stunden zurück.",
-    sub: "Automatische Zeiterfassung, die deinen Tag versteht und deine Leistungsbeschreibungen schreibt — 100 % auf deinem Mac. Kein Byte verlässt das Gerät.",
+  money: {
+    eyebrow: "Automatic time tracking for people who bill",
+    h1: "Vera wins back your lost billable hours.",
+    sub: "Automatic time tracking that understands your day and writes your billing narratives — 100% on your Mac. Not a single byte leaves your device.",
   },
   privacy: {
-    eyebrow: "Zeiterfassung ohne Cloud",
-    h1: "Die einzige KI-Zeiterfassung, bei der kein Byte dein Gerät verlässt.",
-    sub: "Vera versteht deinen Arbeitstag, ordnet ihn Kunden zu und schreibt deine Leistungsbeschreibungen — komplett lokal auf deinem Mac. Und holt dir dabei die Stunden zurück, die manuelle Erfassung verliert.",
+    eyebrow: "Time tracking without the cloud",
+    h1: "The only AI time tracker where not a single byte leaves your device.",
+    sub: "Vera understands your workday, assigns it to clients and writes your billing narratives — entirely on your Mac. And wins back the hours manual tracking loses along the way.",
   },
 } as const;
 
@@ -483,7 +482,7 @@ export function App() {
 
   return (
     <div className="min-h-dvh flex flex-col">
-      {/* Sticky Nav */}
+      {/* Sticky nav */}
       <header className="sticky top-0 z-50 bg-bg-warm/80 backdrop-blur-md border-b border-border-hairline/70">
         <div className="max-w-[1120px] mx-auto px-6 sm:px-10 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 select-none">
@@ -491,13 +490,13 @@ export function App() {
             <span className="font-serif text-[21px] tracking-tight">Vera</span>
           </div>
           <nav className="hidden md:flex items-center gap-8 font-sans text-[13px] text-text-muted">
-            <a href="#how" className="hover:text-text-primary transition-colors">So funktioniert es</a>
-            <a href="#rechner" className="hover:text-text-primary transition-colors">Rechner</a>
-            <a href="#privat" className="hover:text-text-primary transition-colors">Privatsphäre</a>
+            <a href="#how" className="hover:text-text-primary transition-colors">How it works</a>
+            <a href="#calculator" className="hover:text-text-primary transition-colors">Calculator</a>
+            <a href="#private" className="hover:text-text-primary transition-colors">Privacy</a>
             <a href="#faq" className="hover:text-text-primary transition-colors">FAQ</a>
           </nav>
-          <a href="#warteliste" className="inline-flex items-center justify-center rounded-xl font-sans font-medium border border-border-hairline text-text-primary hover:bg-active-hover text-[13px] px-4 py-2 transition-all cursor-pointer no-underline">
-            Warteliste
+          <a href="#waitlist" className="inline-flex items-center justify-center rounded-xl font-sans font-medium border border-border-hairline text-text-primary hover:bg-active-hover text-[13px] px-4 py-2 transition-all cursor-pointer no-underline">
+            Waitlist
           </a>
         </div>
       </header>
@@ -517,11 +516,11 @@ export function App() {
           <VeraWindow />
         </section>
 
-        {/* So funktioniert es */}
+        {/* How it works */}
         <section id="how" className="max-w-[1120px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
           <div className="flex flex-col items-center text-center gap-3 mb-12">
-            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">So funktioniert es</span>
-            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Du arbeitest. Vera rechnet ab.</h2>
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">How it works</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">You do the work. Vera does the billing.</h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             {steps.map((s) => (
@@ -537,49 +536,49 @@ export function App() {
           </div>
         </section>
 
-        {/* Geld-Rechner */}
-        <section id="rechner" className="max-w-[920px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
+        {/* Money calculator */}
+        <section id="calculator" className="max-w-[920px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
           <div className="flex flex-col items-center text-center gap-3 mb-10">
-            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Der Rechner</span>
-            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Was kostet dich vergessene Zeit?</h2>
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">The calculator</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">What does forgotten time cost you?</h2>
           </div>
           <MoneyCalculator />
         </section>
 
-        {/* Privacy-Band (dunkel) */}
-        <section id="privat" className="mt-28 sm:mt-40 scroll-mt-20">
+        {/* Privacy band (dark) */}
+        <section id="private" className="mt-28 sm:mt-40 scroll-mt-20">
           <div className="bg-text-primary text-card-surface">
             <div className="max-w-[1120px] mx-auto px-6 sm:px-10 py-24 sm:py-32 flex flex-col items-center text-center">
               <span className="text-card-surface/60"><LockIcon size={26} /></span>
               <h2 className="font-serif text-[clamp(34px,6vw,60px)] leading-[1.05] tracking-tight mt-6 max-w-[820px]">
-                Kein Account. Kein Server. Kein Byte verlässt dein Gerät.
+                No account. No server. Not a single byte leaves your device.
               </h2>
               <p className="font-sans text-[16px] sm:text-[18px] text-card-surface/70 leading-relaxed max-w-[640px] mt-6">
-                Andere KI-Zeiterfassungen schicken deine Arbeitsinhalte — Mandanten, Kunden, Verträge — in ihre Cloud.
-                Vera nicht: Erfassung, verschlüsselte Datenbank und das KI-Modell laufen vollständig auf deinem Mac.
-                Nicht als Einstellung, sondern als Architektur.
+                Other AI time trackers send your work content — clients, matters, contracts — to their cloud.
+                Vera doesn't: capture, the encrypted database and the AI model run entirely on your Mac.
+                Not as a setting, but as architecture.
               </p>
               <p className="font-sans text-[14px] text-card-surface/50 leading-relaxed max-w-[640px] mt-5">
-                Warum das zählt: 2025 wurde Rewind/Limitless — das bekannteste Aufzeichnungs-Tool — an Meta verkauft und abgeschaltet.
-                Bei Vera gibt es nichts, was man verkaufen könnte: Deine Daten liegen bei dir, nicht bei uns.
+                Why that matters: in 2025, Rewind/Limitless — the best-known recording tool — was sold to Meta and shut down.
+                With Vera there is nothing to sell: your data lives with you, not with us.
               </p>
               <div className="mt-10">
-                <a href="#warteliste" className="inline-flex items-center justify-center gap-2 rounded-xl font-sans font-medium bg-card-surface text-text-primary hover:bg-active-hover text-[15px] px-6 py-3 transition-all active:scale-[0.98] cursor-pointer no-underline">
-                  Auf die Warteliste
+                <a href="#waitlist" className="inline-flex items-center justify-center gap-2 rounded-xl font-sans font-medium bg-card-surface text-text-primary hover:bg-active-hover text-[15px] px-6 py-3 transition-all active:scale-[0.98] cursor-pointer no-underline">
+                  Join the waitlist
                 </a>
               </div>
             </div>
           </div>
         </section>
 
-        {/* Zielgruppen */}
+        {/* Audiences */}
         <section className="max-w-[1120px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40">
           <div className="flex flex-col items-center text-center gap-3 mb-12">
-            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Für alle, die nach Zeit abrechnen</span>
-            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Gemacht für deine Abrechnung.</h2>
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">For everyone who bills by the hour</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Built for your billing.</h2>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-            {zielgruppen.map((z) => (
+            {audiences.map((z) => (
               <div key={z.title} className="card-style p-7 flex flex-col gap-3">
                 <div className="w-10 h-10 rounded-full bg-active-hover border border-border-hairline flex items-center justify-center text-text-primary">{z.icon}</div>
                 <h3 className="font-serif text-[19px] text-text-primary mt-1">{z.title}</h3>
@@ -589,25 +588,25 @@ export function App() {
           </div>
           <div className="mt-5 card-style px-7 py-6 flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex-1">
-              <h3 className="font-serif text-[19px] text-text-primary">Kanzleien & Steuerberatungen</h3>
+              <h3 className="font-serif text-[19px] text-text-primary">Law & tax firms</h3>
               <p className="font-sans text-[14px] text-text-muted leading-relaxed mt-1">
-                Die Kanzlei-Edition mit Windows-Version, DATEV-/RA-MICRO-Export und 6-Minuten-Taktung ist in Vorbereitung —
-                On-Device statt Cloud, damit das Mandatsgeheimnis eine Architekturfrage ist und keine Vertrauensfrage.
+                The Firm Edition with a Windows version, DATEV/RA-MICRO export and 6-minute increments is in the works —
+                on-device instead of cloud, so professional secrecy is a matter of architecture, not of trust.
               </p>
             </div>
-            <a href="#warteliste" className="shrink-0 inline-flex items-center justify-center rounded-xl font-sans font-medium border border-border-hairline text-text-primary hover:bg-active-hover text-[13px] px-4 py-2.5 transition-all cursor-pointer no-underline">
-              Kanzlei-Warteliste
+            <a href="#waitlist" className="shrink-0 inline-flex items-center justify-center rounded-xl font-sans font-medium border border-border-hairline text-text-primary hover:bg-active-hover text-[13px] px-4 py-2.5 transition-all cursor-pointer no-underline">
+              Firm waitlist
             </a>
           </div>
         </section>
 
-        {/* Warteliste */}
-        <section id="warteliste" className="max-w-[640px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
+        {/* Waitlist */}
+        <section id="waitlist" className="max-w-[640px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
           <div className="flex flex-col items-center text-center gap-3 mb-8">
-            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Beta-Zugang</span>
-            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Hol dir deine Stunden zurück.</h2>
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Beta access</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Win back your hours.</h2>
             <p className="font-sans text-[15px] text-text-muted max-w-[460px] leading-relaxed">
-              Die Beta startet in kleinen Wellen. Warteliste zuerst, Frühbucher-Preis inklusive.
+              The beta rolls out in small waves. Waitlist first, early-bird price included.
             </p>
           </div>
           <WaitlistForm variant={variant} />
@@ -616,8 +615,8 @@ export function App() {
         {/* FAQ */}
         <section id="faq" className="max-w-[820px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 mb-28 sm:mb-40 scroll-mt-20">
           <div className="flex flex-col items-center text-center gap-3 mb-8">
-            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Fragen</span>
-            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Gut zu wissen.</h2>
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Questions</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Good to know.</h2>
           </div>
           <div className="flex flex-col">
             {faqs.map((f) => <FAQItem key={f.q} q={f.q} a={f.a} />)}
@@ -634,25 +633,25 @@ export function App() {
               <span className="font-serif text-[18px]">Vera</span>
             </div>
             <p className="font-sans text-[13px] text-text-muted leading-relaxed">
-              Automatische Zeiterfassung, die deine Abrechnung schreibt — 100 % auf deinem Gerät.
+              Automatic time tracking that writes your billing — 100% on your device.
             </p>
           </div>
           <div className="flex gap-14 sm:gap-20">
             <div className="flex flex-col gap-2.5">
-              <span className="font-sans text-[11px] font-semibold tracking-widest uppercase text-text-faint">Produkt</span>
-              <a href="#how" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">So funktioniert es</a>
-              <a href="#rechner" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Rechner</a>
+              <span className="font-sans text-[11px] font-semibold tracking-widest uppercase text-text-faint">Product</span>
+              <a href="#how" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">How it works</a>
+              <a href="#calculator" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Calculator</a>
               <a href="#faq" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">FAQ</a>
             </div>
             <div className="flex flex-col gap-2.5">
-              <span className="font-sans text-[11px] font-semibold tracking-widest uppercase text-text-faint">Mehr</span>
-              <a href="#warteliste" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Warteliste</a>
+              <span className="font-sans text-[11px] font-semibold tracking-widest uppercase text-text-faint">More</span>
+              <a href="#waitlist" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Waitlist</a>
               <a href={`https://github.com/${REPO}`} target="_blank" rel="noopener noreferrer" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">GitHub</a>
             </div>
           </div>
         </div>
         <div className="max-w-[1120px] mx-auto px-6 sm:px-10 pb-10">
-          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Zeiterfassung, die auf deinem Gerät bleibt</span>
+          <span className="font-sans text-[12px] text-text-faint">© {new Date().getFullYear()} Vera · Time tracking that stays on your device</span>
         </div>
       </footer>
     </div>

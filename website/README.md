@@ -4,6 +4,10 @@ Die Marketing-Site für Vera: automatische Zeiterfassung, die Kunden zuordnet
 und Leistungsbeschreibungen schreibt — 100 % auf dem Gerät. Eine kleine
 Vite + React + Tailwind-4-Site mit Veras warmen Monochrom-Design-Tokens.
 
+**Feste Regel: Die Website-Texte sind IMMER Englisch** (Entscheidung des
+Owners, Juli 2026). Neue Sektionen, Landingpages und Copy-Änderungen werden
+ausschließlich auf Englisch verfasst.
+
 ## Lokal starten
 
 ```bash
@@ -34,16 +38,16 @@ Build-Umgebungsvariable `VITE_WAITLIST_ENDPOINT`:
 Ohne gesetzten Endpoint zeigt das Formular beim Absenden eine ehrliche
 Fehlermeldung — es gehen keine Eingaben stillschweigend verloren.
 
-Jede Anmeldung enthält: `email`, `variant` (A/B-Hero-Variante `geld` oder
-`privacy`), `segment` (Mehrfachauswahl), `kanzlei_interesse` (Checkbox für
-die Kanzlei-Edition) und `quelle` (`hero` oder `formular`).
+Jede Anmeldung enthält: `email`, `variant` (A/B-Hero-Variante `money` oder
+`privacy`), `segment` (Mehrfachauswahl), `firm_interest` (Checkbox für die
+Firm Edition) und `source` (`hero` oder `form`).
 
 ## A/B-Test der Hero-Botschaft
 
-- Standard (`/`): Geld-Variante — "Vera holt dir verlorene abrechenbare
-  Stunden zurück."
-- `/?v=privacy`: Privacy-Variante — "Die einzige KI-Zeiterfassung, bei der
-  kein Byte dein Gerät verlässt."
+- Standard (`/`): Money-Variante — "Vera wins back your lost billable
+  hours."
+- `/?v=privacy`: Privacy-Variante — "The only AI time tracker where not a
+  single byte leaves your device."
 
 Die Variante wird bei jeder Wartelisten-Anmeldung mitgesendet und lässt sich
 so direkt in den Formular-Daten auswerten.
