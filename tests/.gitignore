@@ -3,3 +3,5 @@
 .narrative-core.bundle.mjs
 .export.bundle.mjs
 .reports-core.bundle.mjs
+.license-core.bundle.mjs
+.license-crypto.bundle.mjs

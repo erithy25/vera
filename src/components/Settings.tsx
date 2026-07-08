@@ -6,6 +6,7 @@ import { activityRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";
 import { domainOf } from "../lib/segmentation";
+import { LicenseCard } from "./LicenseCard";
 
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
@@ -474,6 +475,9 @@ export const Settings: React.FC = () => {
           Manage capture, privacy controls, and the local AI model. Everything runs on this Mac.
         </p>
       </div>
+
+      {/* License (trial / activation / buy trigger) */}
+      <LicenseCard />
 
       {/* Local AI Card (Ollama — the only engine) */}
       <div id="settings-local-ai" className="card-style p-6 flex flex-col gap-5 scroll-mt-6">

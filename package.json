@@ -13,7 +13,8 @@
     "test:narratives": "esbuild src/lib/narrative-core.ts --bundle --format=esm --outfile=tests/.narrative-core.bundle.mjs && node tests/narratives.test.mjs",
     "test:export": "esbuild src/lib/export/index.ts --bundle --format=esm --outfile=tests/.export.bundle.mjs && node tests/export.test.mjs",
     "test:reports": "esbuild src/lib/reports-core.ts --bundle --format=esm --outfile=tests/.reports-core.bundle.mjs && node tests/reports.test.mjs",
-    "test": "npm run test:segmentation && npm run test:assignment && npm run test:narratives && npm run test:export && npm run test:reports"
+    "test:license": "esbuild src/lib/license-core.ts --bundle --format=esm --outfile=tests/.license-core.bundle.mjs && esbuild src/lib/license-crypto.ts --bundle --format=esm --outfile=tests/.license-crypto.bundle.mjs && node tests/license.test.mjs",
+    "test": "npm run test:segmentation && npm run test:assignment && npm run test:narratives && npm run test:export && npm run test:reports && npm run test:license"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.0.0",

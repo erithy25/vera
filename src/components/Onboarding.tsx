@@ -5,11 +5,16 @@ import {
   Eye,
   MousePointerClick,
   Globe,
+  Cpu,
+  Briefcase,
+  Sparkles,
   Check,
+  Download,
   ArrowRight,
   ArrowLeft,
 } from "lucide-react";
-import { settingsRepo } from "../lib/db";
+import { settingsRepo, clientsRepo, projectsRepo } from "../lib/db";
+import { ollamaClient, PullProgress } from "../lib/ollama";
 import { enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 
 interface OnboardingProps {
@@ -17,6 +22,11 @@ interface OnboardingProps {
 }
 
 type PermissionState = "granted" | "missing" | "unknown";
+
+// The model Vera recommends out of the box — small enough for an 8 GB Mac,
+// good enough for classification and narratives.
+const RECOMMENDED_MODEL = "llama3.2:3b";
+const TOTAL_STEPS = 5;
 
 const StatusChip: React.FC<{ granted: boolean; label?: string }> = ({ granted, label }) => (
   <span
@@ -31,9 +41,9 @@ const StatusChip: React.FC<{ granted: boolean; label?: string }> = ({ granted, l
   </span>
 );
 
-// Minimal first-run flow: what Vera is → permissions → name. The full
-// sales-grade onboarding (model setup, first clients, time-to-wow) ships with
-// the monetization layer.
+// First-run flow, sales-grade (Schicht 6): 1) what Vera is, 2) permissions,
+// 3) local model setup, 4) first client/project, 5) the promise. Time-to-wow
+// under 24 h — tomorrow morning Vera shows the first full day.
 export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [step, setStep] = useState(1);
   const [accessibility, setAccessibility] = useState<PermissionState>("unknown");
@@ -42,6 +52,21 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Step 3 — model
+  const [ollamaOnline, setOllamaOnline] = useState<boolean | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [pulling, setPulling] = useState(false);
+  const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
+
+  // Step 4 — first client/project
+  const [clientName, setClientName] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [rateInput, setRateInput] = useState("");
+  const [savedFirst, setSavedFirst] = useState(false);
+  const [savingFirst, setSavingFirst] = useState(false);
+  const [firstError, setFirstError] = useState<string | null>(null);
 
   const refreshPermissions = async () => {
     try {
@@ -56,7 +81,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     }
   };
 
-  // Live permission status while the permissions step is visible
   useEffect(() => {
     if (step === 2) {
       refreshPermissions();
@@ -67,9 +91,43 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     }
   }, [step]);
 
+  const checkOllama = async () => {
+    try {
+      const online = await ollamaClient.isRunning();
+      setOllamaOnline(online);
+      setModels(online ? await ollamaClient.listModels() : []);
+    } catch {
+      setOllamaOnline(false);
+      setModels([]);
+    }
+  };
+
+  useEffect(() => {
+    if (step === 3) {
+      checkOllama();
+    }
+  }, [step]);
+
+  const hasRecommended = models.some((m) => m === RECOMMENDED_MODEL || m === `${RECOMMENDED_MODEL}:latest`);
+
+  const pullModel = async () => {
+    setPulling(true);
+    setModelError(null);
+    setPullProgress(null);
+    try {
+      await ollamaClient.pullModel(RECOMMENDED_MODEL, setPullProgress);
+      await settingsRepo.setChatModel(RECOMMENDED_MODEL);
+      await checkOllama();
+    } catch (err: any) {
+      setModelError(err?.message || "Model download failed. Is Ollama running?");
+    } finally {
+      setPulling(false);
+      setPullProgress(null);
+    }
+  };
+
   const grantAccessibility = async () => {
     try {
-      // Shows the system prompt (adds Vera to the list) and opens the pane
       await invoke("request_accessibility_permission");
       await invoke("open_privacy_settings", { pane: "accessibility" });
     } catch (err) {
@@ -91,6 +149,39 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       await invoke("open_privacy_settings", { pane: "automation" });
     } catch (err) {
       console.error("Failed to open automation settings:", err);
+    }
+  };
+
+  const saveFirstProject = async (demo: boolean) => {
+    setSavingFirst(true);
+    setFirstError(null);
+    try {
+      if (demo) {
+        const clientId = await clientsRepo.add("Acme Studio", null, 12000);
+        await projectsRepo.add(clientId, "Website Relaunch", true, null);
+        const legalId = await clientsRepo.add("Northwind Legal", null, 24000);
+        await projectsRepo.add(legalId, "Contract Review", true, null);
+      } else {
+        const cn = clientName.trim();
+        const pn = projectName.trim();
+        if (!cn || !pn) {
+          setFirstError("Enter a client and a project name — or use the demo data.");
+          return;
+        }
+        const euros = rateInput.trim().replace(",", ".");
+        const rateCents = euros ? Math.round(parseFloat(euros) * 100) : null;
+        if (euros && (rateCents === null || isNaN(rateCents))) {
+          setFirstError("That hourly rate isn't a number.");
+          return;
+        }
+        const clientId = await clientsRepo.add(cn, null, rateCents);
+        await projectsRepo.add(clientId, pn, true, null);
+      }
+      setSavedFirst(true);
+    } catch (err: any) {
+      setFirstError(err?.message || "Could not save. Try again.");
+    } finally {
+      setSavingFirst(false);
     }
   };
 
@@ -124,7 +215,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   return (
     <div className="fixed inset-0 bg-bg-warm flex flex-col items-center justify-center font-sans text-text-primary z-50 overflow-y-auto py-10">
       <div className="w-full max-w-[640px] flex flex-col gap-6 px-8">
-        {/* Step 1 — Welcome */}
+        {/* Step 1 — Welcome / positioning */}
         {step === 1 && (
           <div className="flex flex-col items-center gap-6 select-none">
             <h1 className="font-serif text-[64px] font-normal text-text-primary tracking-tight text-center">
@@ -168,7 +259,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </div>
 
             <div className="card-style p-5 flex flex-col gap-4">
-              {/* Accessibility */}
               <div className="flex items-center gap-3">
                 <MousePointerClick size={18} strokeWidth={1.5} className="text-text-muted shrink-0" />
                 <div className="flex flex-col min-w-0 flex-1">
@@ -190,7 +280,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
               <div className="h-px bg-border-hairline w-full" />
 
-              {/* Screen Recording */}
               <div className="flex items-center gap-3">
                 <Eye size={18} strokeWidth={1.5} className="text-text-muted shrink-0" />
                 <div className="flex flex-col min-w-0 flex-1">
@@ -212,7 +301,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
               <div className="h-px bg-border-hairline w-full" />
 
-              {/* Automation (optional) */}
               <div className="flex items-center gap-3">
                 <Globe size={18} strokeWidth={1.5} className="text-text-muted shrink-0" />
                 <div className="flex flex-col min-w-0 flex-1">
@@ -242,15 +330,163 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           </div>
         )}
 
-        {/* Step 3 — Name */}
+        {/* Step 3 — Local model */}
         {step === 3 && (
           <div className="flex flex-col gap-5 select-none">
             <div className="flex flex-col gap-1.5">
-              <h2 className="font-serif text-[32px] font-normal tracking-tight">What should Vera call you?</h2>
+              <h2 className="font-serif text-[32px] font-normal tracking-tight">Your local AI</h2>
               <p className="font-sans text-[14px] text-text-muted leading-relaxed">
-                Shown in the sidebar. You can change it anytime in Settings.
+                Vera classifies work and writes narratives with a model that runs
+                entirely on your Mac through Ollama. Nothing is sent anywhere.
               </p>
             </div>
+
+            <div className="card-style p-5 flex flex-col gap-4">
+              <div className="flex items-center gap-3">
+                <Cpu size={18} strokeWidth={1.5} className="text-text-muted shrink-0" />
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="font-sans text-[14px] font-medium">Ollama</span>
+                  <span className="font-sans text-[12px] text-text-faint">
+                    {ollamaOnline === null
+                      ? "Checking…"
+                      : ollamaOnline
+                        ? "Running on this Mac."
+                        : "Not detected. Install it from ollama.com, then reopen this step."}
+                  </span>
+                </div>
+                <StatusChip granted={!!ollamaOnline} label={ollamaOnline ? "Running" : "Offline"} />
+              </div>
+
+              <div className="h-px bg-border-hairline w-full" />
+
+              <div className="flex items-center gap-3">
+                <Sparkles size={18} strokeWidth={1.5} className="text-text-muted shrink-0" />
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="font-sans text-[14px] font-medium">
+                    Recommended model · {RECOMMENDED_MODEL}
+                  </span>
+                  <span className="font-sans text-[12px] text-text-faint">
+                    About 2 GB. Runs comfortably on Apple Silicon with 8 GB of memory or more.
+                  </span>
+                </div>
+                {hasRecommended ? (
+                  <StatusChip granted label="Ready" />
+                ) : (
+                  <button
+                    onClick={pullModel}
+                    disabled={!ollamaOnline || pulling}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-text-primary rounded-xl font-sans text-[12px] font-medium text-text-primary hover:bg-active-hover transition-all cursor-pointer shrink-0 disabled:opacity-40"
+                  >
+                    <Download size={13} strokeWidth={1.5} />
+                    {pulling ? "Downloading…" : "Download"}
+                  </button>
+                )}
+              </div>
+
+              {pulling && pullProgress && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="w-full bg-active-hover h-2 rounded-full overflow-hidden border border-border-hairline">
+                    <div
+                      className="bg-text-primary h-full transition-all duration-300"
+                      style={{ width: `${pullProgress.percent}%` }}
+                    />
+                  </div>
+                  <span className="font-sans text-[11px] text-text-faint italic">{pullProgress.status}</span>
+                </div>
+              )}
+              {modelError && <span className="font-sans text-[12px] text-red-600">{modelError}</span>}
+            </div>
+
+            <p className="font-sans text-[12px] text-text-faint leading-relaxed">
+              No model yet? You can still use Vera — it falls back to plain,
+              evidence-based narratives until a model is ready, and you can set
+              this up later in Settings.
+            </p>
+          </div>
+        )}
+
+        {/* Step 4 — First client / project */}
+        {step === 4 && (
+          <div className="flex flex-col gap-5 select-none">
+            <div className="flex flex-col gap-1.5">
+              <h2 className="font-serif text-[32px] font-normal tracking-tight">Your first client</h2>
+              <p className="font-sans text-[14px] text-text-muted leading-relaxed">
+                Add one client and project so Vera has somewhere to assign your
+                work. You can add more anytime in Clients &amp; Projects.
+              </p>
+            </div>
+
+            {savedFirst ? (
+              <div className="card-style px-6 py-8 flex flex-col items-center text-center gap-3">
+                <span className="w-11 h-11 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-600">
+                  <Check size={20} strokeWidth={2} />
+                </span>
+                <span className="font-sans text-[14px] text-text-muted">
+                  Added. Vera will start suggesting this client for matching work.
+                </span>
+              </div>
+            ) : (
+              <div className="card-style p-5 flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <Briefcase size={16} strokeWidth={1.5} className="text-text-muted shrink-0" />
+                  <input
+                    type="text"
+                    value={clientName}
+                    onChange={(e) => setClientName(e.target.value)}
+                    placeholder="Client name"
+                    className="flex-1 px-3 py-2 bg-bg-warm border border-border-hairline rounded-lg font-sans text-[13px] text-text-primary outline-none focus:border-text-muted"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="Project (e.g. Website Relaunch)"
+                    className="flex-1 px-3 py-2 bg-bg-warm border border-border-hairline rounded-lg font-sans text-[13px] text-text-primary outline-none focus:border-text-muted"
+                  />
+                  <input
+                    type="text"
+                    value={rateInput}
+                    onChange={(e) => setRateInput(e.target.value)}
+                    placeholder="€/h (optional)"
+                    className="w-32 px-3 py-2 bg-bg-warm border border-border-hairline rounded-lg font-sans text-[13px] text-text-primary outline-none focus:border-text-muted"
+                  />
+                </div>
+                {firstError && <span className="font-sans text-[12px] text-red-600">{firstError}</span>}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => saveFirstProject(false)}
+                    disabled={savingFirst}
+                    className="px-4 py-2 rounded-lg bg-text-primary text-card-surface font-sans text-[13px] font-medium hover:bg-text-muted transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Add client
+                  </button>
+                  <button
+                    onClick={() => saveFirstProject(true)}
+                    disabled={savingFirst}
+                    className="px-4 py-2 rounded-lg border border-border-hairline font-sans text-[13px] font-medium text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Use demo data instead
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 5 — Promise + name */}
+        {step === 5 && (
+          <div className="flex flex-col gap-5 select-none">
+            <div className="flex flex-col gap-1.5">
+              <h2 className="font-serif text-[32px] font-normal tracking-tight">You're set.</h2>
+              <p className="font-sans text-[15px] text-text-muted leading-relaxed">
+                Vera is now watching your workday quietly in the background.
+                Tomorrow morning it will show you your first full day — already
+                split into blocks, assigned to clients, ready to close in minutes.
+              </p>
+            </div>
+
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -261,13 +497,12 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 type="text"
                 value={nameInput}
                 onChange={(e) => setNameInput(e.target.value)}
-                placeholder="Your name"
+                placeholder="What should Vera call you?"
                 autoFocus
                 className="w-full px-5 py-4 bg-card-surface border border-border-hairline rounded-[16px] font-serif text-[22px] text-text-primary outline-none placeholder:text-text-muted placeholder:italic focus:border-text-muted/80 transition-all"
               />
             </form>
 
-            {/* Optional: start at login */}
             <label className="card-style p-4 flex items-start justify-between gap-4 cursor-pointer">
               <div className="flex flex-col gap-1">
                 <span className="font-sans text-[14px] font-medium text-text-primary">
@@ -284,13 +519,18 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 className="mt-1 cursor-pointer w-4 h-4 accent-text-primary rounded border-border-hairline shrink-0"
               />
             </label>
+
+            <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint">
+              <Lock size={12} strokeWidth={1.5} />
+              14-day free trial · no account, no credit card · not a single byte leaves your device
+            </span>
           </div>
         )}
 
         {/* Footer: progress dots + navigation */}
         <div className="flex items-center justify-between mt-2 select-none">
           <div className="flex items-center gap-2">
-            {[1, 2, 3].map((s) => (
+            {Array.from({ length: TOTAL_STEPS }, (_, i) => i + 1).map((s) => (
               <span
                 key={s}
                 className={`w-1.5 h-1.5 rounded-full transition-all duration-200 ${
@@ -318,7 +558,15 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 Skip for now
               </button>
             )}
-            {step < 3 ? (
+            {step === 4 && !savedFirst && (
+              <button
+                onClick={() => setStep(5)}
+                className="px-4 py-2.5 rounded-xl font-sans text-[13px] font-medium text-text-faint hover:text-text-muted transition-all cursor-pointer"
+              >
+                Skip for now
+              </button>
+            )}
+            {step < TOTAL_STEPS ? (
               <button
                 onClick={() => setStep(step + 1)}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-text-primary text-card-surface font-sans text-[13px] font-medium hover:bg-text-muted transition-all cursor-pointer"

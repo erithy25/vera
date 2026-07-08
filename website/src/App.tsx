@@ -16,6 +16,15 @@ const REPO = "erithy25/vera";
 // endpoint the form shows an honest error instead of silently dropping input.
 const WAITLIST_ENDPOINT: string = import.meta.env.VITE_WAITLIST_ENDPOINT ?? "";
 
+// Checkout links (merchant of record — Lemon Squeezy / Paddle) per plan. Set
+// at build time via VITE_CHECKOUT_SOLO / _PRO / _FIRM. Until a store is live
+// they fall back to the waitlist, so no CTA is ever a dead link.
+const CHECKOUT = {
+  solo: import.meta.env.VITE_CHECKOUT_SOLO ?? "",
+  pro: import.meta.env.VITE_CHECKOUT_PRO ?? "",
+  firm: import.meta.env.VITE_CHECKOUT_FIRM ?? "",
+} as const;
+
 // A/B hero variant: default "money", ?v=privacy switches to the privacy
 // angle. The variant travels with every waitlist signup.
 function getVariant(): "money" | "privacy" {
@@ -374,12 +383,132 @@ function MoneyCalculator() {
   );
 }
 
+// --- Pricing ---
+
+interface Tier {
+  name: string;
+  price: string;
+  cadence: string;
+  tagline: string;
+  features: string[];
+  checkout: string;
+  ctaLabel: string;
+  highlight?: boolean;
+  note?: string;
+}
+
+const tiers: Tier[] = [
+  {
+    name: "Solo",
+    price: "€19",
+    cadence: "/ month",
+    tagline: "For freelancers who bill their own time.",
+    features: [
+      "Automatic capture, blocks & assignment",
+      "Local-AI billing narratives",
+      "Daily close & rounding rules",
+      "CSV export & reports",
+      "100% on-device — no account",
+    ],
+    checkout: CHECKOUT.solo,
+    ctaLabel: "Start free trial",
+  },
+  {
+    name: "Pro",
+    price: "€29",
+    cadence: "/ month",
+    tagline: "For consultants & studios that push into billing tools.",
+    features: [
+      "Everything in Solo",
+      "Direct integrations (Toggl, Harvest & more)",
+      "Per-project rates & rounding overrides",
+      "Recovered-time reports & share cards",
+      "Priority support",
+    ],
+    checkout: CHECKOUT.pro,
+    ctaLabel: "Start free trial",
+    highlight: true,
+    note: "Integrations roll out with the Pro plan.",
+  },
+  {
+    name: "Firm",
+    price: "€49",
+    cadence: "/ seat / month",
+    tagline: "For law & tax firms with strict secrecy needs.",
+    features: [
+      "Everything in Pro",
+      "Windows + macOS",
+      "DATEV / RA-MICRO export, 6-minute increments",
+      "Aggregated team summaries — no monitoring",
+      "On-device by architecture (§203-friendly)",
+    ],
+    checkout: CHECKOUT.firm,
+    ctaLabel: "Join the Firm waitlist",
+    note: "Firm Edition ships with the Windows version.",
+  },
+];
+
+function Pricing() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+      {tiers.map((t) => (
+        <div
+          key={t.name}
+          className={`card-style p-7 flex flex-col gap-5 ${
+            t.highlight ? "border-text-primary shadow-[0_20px_50px_-24px_rgba(28,28,26,0.28)]" : ""
+          }`}
+        >
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <span className="font-serif text-[22px] text-text-primary">{t.name}</span>
+              {t.highlight && (
+                <span className="font-sans text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full bg-text-primary text-card-surface">
+                  Most popular
+                </span>
+              )}
+            </div>
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="font-serif text-[40px] tracking-tight text-text-primary tabular-nums">{t.price}</span>
+              <span className="font-sans text-[13px] text-text-faint">{t.cadence}</span>
+            </div>
+            <p className="font-sans text-[13.5px] text-text-muted leading-relaxed mt-1">{t.tagline}</p>
+          </div>
+
+          <div className="h-px bg-border-hairline w-full" />
+
+          <ul className="flex flex-col gap-2.5 flex-1">
+            {t.features.map((f) => (
+              <li key={f} className="flex items-start gap-2.5">
+                <span className="text-text-primary shrink-0 mt-0.5"><CheckIcon size={15} /></span>
+                <span className="font-sans text-[13.5px] text-text-muted leading-snug">{f}</span>
+              </li>
+            ))}
+          </ul>
+
+          <a
+            href={t.checkout || "#waitlist"}
+            {...(t.checkout ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+            className={`inline-flex items-center justify-center rounded-xl font-sans font-medium text-[14px] px-5 py-3 transition-all active:scale-[0.98] cursor-pointer no-underline ${
+              t.highlight
+                ? "bg-text-primary text-card-surface hover:bg-text-muted"
+                : "border border-border-hairline text-text-primary hover:bg-active-hover"
+            }`}
+          >
+            {t.ctaLabel}
+          </a>
+          {t.note && <span className="font-sans text-[11.5px] text-text-faint text-center -mt-2">{t.note}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // --- FAQ ---
 
 const faqs = [
   {
     q: "Does my data really never leave the device?",
-    a: "Yes — by architecture, not by promise. Capture, text recognition, the database and the AI model (via Ollama) run entirely on your Mac; the database is encrypted. There is no account, no server, no telemetry. The app's only network contact is the update check — and later the license check when you buy.",
+    a: "Yes — by architecture, not by promise. Capture, text recognition, the database and the AI model (via Ollama) run entirely on your Mac; the database is encrypted. There is no account, no server, no telemetry. The app's only network contact is the update check — even your license is verified on-device, so buying and activating sends nothing.",
   },
   {
     q: "Which permissions does Vera need?",
@@ -492,6 +621,7 @@ export function App() {
           <nav className="hidden md:flex items-center gap-8 font-sans text-[13px] text-text-muted">
             <a href="#how" className="hover:text-text-primary transition-colors">How it works</a>
             <a href="#calculator" className="hover:text-text-primary transition-colors">Calculator</a>
+            <a href="#pricing" className="hover:text-text-primary transition-colors">Pricing</a>
             <a href="#private" className="hover:text-text-primary transition-colors">Privacy</a>
             <a href="#faq" className="hover:text-text-primary transition-colors">FAQ</a>
           </nav>
@@ -600,6 +730,18 @@ export function App() {
           </div>
         </section>
 
+        {/* Pricing */}
+        <section id="pricing" className="max-w-[1120px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
+          <div className="flex flex-col items-center text-center gap-3 mb-12">
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Pricing</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">One recovered hour pays for months.</h2>
+            <p className="font-sans text-[15px] text-text-muted max-w-[520px] leading-relaxed">
+              14-day free trial, no account and no credit card. Your data stays on your device on every plan.
+            </p>
+          </div>
+          <Pricing />
+        </section>
+
         {/* Waitlist */}
         <section id="waitlist" className="max-w-[640px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
           <div className="flex flex-col items-center text-center gap-3 mb-8">
@@ -641,6 +783,7 @@ export function App() {
               <span className="font-sans text-[11px] font-semibold tracking-widest uppercase text-text-faint">Product</span>
               <a href="#how" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">How it works</a>
               <a href="#calculator" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Calculator</a>
+              <a href="#pricing" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">Pricing</a>
               <a href="#faq" className="font-sans text-[13px] text-text-muted hover:text-text-primary transition-colors">FAQ</a>
             </div>
             <div className="flex flex-col gap-2.5">

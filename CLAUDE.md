@@ -17,4 +17,4 @@ Tauri 2 desktop app (macOS-only: Objective-C/Swift natives, CoreGraphics/AppKit)
 - No UI/design changes unless explicitly requested.
 - Develop on the designated claude/* branch; commit and push after each task.
 - The app only compiles on macOS (frameworks + swiftc). In Linux containers: verify the frontend with `npx tsc --noEmit` + `npm run build`, and prove native/SQL logic with standalone replica tests.
-- Never reintroduce cloud AI calls into the app — "not a single byte leaves your device" is the product's core promise (the only network contacts are the update check and, later, license validation).
+- Never reintroduce cloud AI calls into the app — "not a single byte leaves your device" is the product's core promise. The app's ONLY network contact is the update check. Licensing is fully offline (Schicht 6): license keys are ECDSA-signed and verified on-device against an embedded public key, so activation makes no network call — the merchant of record delivers the signed key by email.

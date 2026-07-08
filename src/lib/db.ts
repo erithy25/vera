@@ -1106,6 +1106,49 @@ export const settingsRepo = {
     );
   },
 
+  // --- Licensing (Schicht 6) ---
+
+  // The offline-verifiable license key ("<payload>.<sig>"), or null when the
+  // user is on the trial. The key itself is not a secret — verification uses
+  // the embedded public key — so it is stored in plain settings.
+  async getLicenseKey(): Promise<string | null> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'license_key'");
+    const v = rows.length > 0 ? String(rows[0].value).trim() : "";
+    return v.length > 0 ? v : null;
+  },
+
+  async setLicenseKey(key: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('license_key', $1)",
+      [key.trim()]
+    );
+  },
+
+  async clearLicenseKey(): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM settings WHERE key = 'license_key'");
+  },
+
+  // Local-midnight-agnostic timestamp of the very first launch — anchors the
+  // trial window. Seeded once (here, lazily) so upgrades from pre-Schicht-6
+  // installs get a trial starting now rather than being locked out.
+  async ensureFirstRunAt(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'license_first_run_at'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    const now = Date.now();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('license_first_run_at', $1)",
+      [String(now)]
+    );
+    return now;
+  },
+
   // Mirror of the OS "start at login" state (the OS Login Items is the truth).
   async getAutostartEnabled(): Promise<boolean> {
     const db = await getDb();
@@ -1177,6 +1220,7 @@ export async function initializeDefaultSettings() {
   await checkAndSeed("user_name", "");
   await checkAndSeed("onboarding_complete", "false");
   await checkAndSeed("autostart_enabled", "false");
+  await checkAndSeed("license_first_run_at", String(Date.now())); // trial anchor, set once
 
   // Delete existing system-process rows (lock screen, screensaver, ...) from activity history
   try {

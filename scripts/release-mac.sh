@@ -39,6 +39,21 @@ fi
 # Strip a trailing slash from the endpoint, e.g. https://vera.vercel.app
 UPDATER_ENDPOINT="${UPDATER_ENDPOINT%/}"
 
+# Licensing needs no server: keys are verified offline against the public key
+# embedded in the app (src/lib/license.ts). The updater endpoint below is the
+# app's only network contact. The merchant of record (Lemon Squeezy / Paddle)
+# delivers the signed key by email — no license API to configure here.
+
+# Release-safety guard: package.json and tauri.conf.json versions must match,
+# or the updater manifest advertises a version the bundle doesn't carry.
+PKG_VERSION="$(node -e 'console.log(require("./package.json").version)')"
+CONF_VERSION="$(node -e 'console.log(require("./src-tauri/tauri.conf.json").version)')"
+if [ "$PKG_VERSION" != "$CONF_VERSION" ]; then
+  echo "Version mismatch: package.json=$PKG_VERSION but tauri.conf.json=$CONF_VERSION."
+  echo "Bump both to the same version before releasing."
+  exit 1
+fi
+
 # --- Updater signing keypair (separate from the Apple certificate) ---
 # Generated once and kept on this Mac. The public key is baked into the app;
 # the private key signs each update so the app can verify it is genuine.

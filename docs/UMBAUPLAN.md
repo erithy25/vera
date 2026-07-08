@@ -578,6 +578,34 @@ Summen gegen Fixture-Daten.
 - `scripts/release-mac.sh`: Signierung/Notarisierung + Updater-JSON auf das
   neue Release-Schema geprüft.
 
+**UMGEBAUT:**
+- Umsetzungsnotizen Schicht 6: Lizenzierung ist bewusst KOMPLETT OFFLINE
+  umgesetzt (statt "einziger Netzwerk-Call") — der Schlüssel ist ein
+  ECDSA-P-256-signiertes Payload `{e,p,iat,exp}`, das die App gegen den
+  eingebetteten Public Key lokal verifiziert (`src/lib/license.ts`,
+  `license-crypto.ts` via Web Crypto). Damit verlässt für die Lizenzierung
+  KEIN Byte das Gerät — das stärkt das Versprechen. Der Merchant-of-Record
+  (Lemon Squeezy / Paddle) übernimmt Zahlung + EU-USt. und mailt den
+  signierten Schlüssel; der einzige Netzwerk-Call der App bleibt der
+  Update-Check. Reine Logik (base64url, Key-Parsing, Entitlement-State,
+  Buy-Trigger) in `src/lib/license-core.ts`, replika-getestet inkl. echtem
+  Sign→Verify-Round-Trip + Tamper-Erkennung (`npm run test:license`).
+  Entitlement: Trial 14 Tage voll funktionsfähig → nach Ablauf/Kündigung
+  14 Tage Grace → danach ist NUR der Billing-Export (CSV/Toggl/Harvest)
+  gesperrt; Capture, Review, Tagesabschluss, Narrative und der komplette
+  DSGVO-Datenexport bleiben IMMER frei — die eigenen Daten werden nie als
+  Geisel genommen. Buy-Trigger "Vera found you €X" (zurückgeholte Zeit ×
+  Ø-Satz, ehrlich: nur Stunden ohne Satz) in der License-Karte. Onboarding
+  neu in 5 Schritten (Positionierung → Berechtigungen → lokales Modell mit
+  Ein-Klick-Pull → erste Kunden/Demo-Daten → Versprechen). Website:
+  Pricing-Sektion (Solo €19 / Pro €29 / Firm €49), Checkout env-konfigurierbar
+  (`VITE_CHECKOUT_*`, Fallback Waitlist, nie tote Links). `release-mac.sh`
+  um Versions-Konsistenzprüfung (package.json ↔ tauri.conf.json) ergänzt;
+  Updater-Schema (version/notes/pub_date/platforms) bestätigt.
+  Offen für den Owner (Live-Gang, nicht im Container möglich): echtes
+  MoR-Konto + Produktion-Signierschlüssel (Public Key in `license.ts`
+  ersetzen) + Notarisierung/Release — in den Code-Kommentaren dokumentiert.
+
 **NACHWEIS/ABNAHME:** Kompletter Kauf → Schlüssel → Aktivierung → Update-Zyklus
 einmal real durchlaufen. Erste 100 zahlende Nutzer / €10k MRR als
 Geschäftsziel dieser Schicht; <5 % Monats-Churn.

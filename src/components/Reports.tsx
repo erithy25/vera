@@ -27,6 +27,7 @@ import {
   ReportRange,
 } from "../lib/reports-core";
 import { buildExportRows, exportAdapters } from "../lib/export";
+import { currentEntitlement } from "../lib/license";
 import { entryDateOf } from "../lib/narrative-core";
 import { prevDayStart, formatDuration, formatEuroFromCents } from "../lib/format";
 
@@ -129,6 +130,19 @@ export const Reports: React.FC = () => {
     if (!adapter) return;
     setExportState({ status: "working" });
     try {
+      // Billing-format export is the paid feature. The full-data backup in the
+      // profile menu stays free — your data is always yours.
+      const ent = await currentEntitlement();
+      if (!ent.entitled) {
+        setExportState({
+          status: "error",
+          message:
+            ent.status === "trial_expired"
+              ? "Your trial has ended. Add a license in Settings to export billing files."
+              : "Your license has lapsed. Renew it in Settings to export billing files.",
+        });
+        return;
+      }
       const rows = buildExportRows(entries, projects);
       if (rows.length === 0) {
         setExportState({ status: "error", message: "No confirmed entries in this period." });
