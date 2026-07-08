@@ -4,6 +4,7 @@ import { CheckCircle2 } from "lucide-react";
 import { blocksRepo, entriesRepo, settingsRepo } from "../lib/db";
 import { dayStartOf, nextDayStart, formatDuration } from "../lib/format";
 import { entryDateOf } from "../lib/narrative-core";
+// (status queries are aggregates — O(1) regardless of the day's size)
 
 // Today's daily-close state, shown next to the capture badge: how many blocks
 // still need review, or — once closed — the confirmed total. Clicking it opens
@@ -43,16 +44,11 @@ export const TopBar: React.FC = () => {
     const loadCloseStatus = async () => {
       try {
         const todayStart = dayStartOf(Date.now());
-        const [blocks, entries] = await Promise.all([
-          blocksRepo.forDay(todayStart, nextDayStart(todayStart)),
-          entriesRepo.forDate(entryDateOf(todayStart)),
+        const [openCount, confirmedMinutes] = await Promise.all([
+          blocksRepo.countOpenForDay(todayStart, nextDayStart(todayStart)),
+          entriesRepo.confirmedMinutesForDate(entryDateOf(todayStart)),
         ]);
-        setCloseStatus({
-          openCount: blocks.filter((b) => b.status === "open").length,
-          confirmedMinutes: entries
-            .filter((e) => e.status !== "draft")
-            .reduce((acc, e) => acc + e.rounded_minutes, 0),
-        });
+        setCloseStatus({ openCount, confirmedMinutes });
       } catch (err) {
         console.error("Failed to load daily-close status:", err);
       }

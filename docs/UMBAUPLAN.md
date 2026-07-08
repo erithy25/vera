@@ -461,7 +461,25 @@ Tagesabschluss dauert unter 5 Minuten. Das ist die direkte Antwort auf die
   nie auf 0 (Minimum 1 Inkrement). TopBar-Anker → App
   (`vera-open-daily-close`) → DayView öffnet das Overlay über einen
   Counter-Prop (übersteht nicht-gemountetes DayView). Migration v9 +
-  `entriesRepo` als Python-Replika bewiesen (19 Checks).
+  `entriesRepo` als Python-Replika bewiesen (26 Checks).
+- Nacharbeit aus dem Schicht-4-Review (6 Finder-Agenten): Beträge folgen
+  IMMER den Blöcken (auch bei editierten Drafts — nachträglich bestätigte
+  Zeit geht nie verloren; verschwundene Gruppen fallen ehrlich auf 0),
+  Narrative unveränderter Drafts werden ohne neuen LLM-Pass wiederverwendet,
+  Generierungsläufe sind serialisiert (keine Duplikat-Einträge durch
+  Doppelklick/Back), der ↻-Button schreibt als Maschine (nie `user_edited`,
+  nie Fallback über guten Text), bestätigte/exportierte Einträge sind in
+  Repo UND UI schreibgeschützt, non-billable ≠ "ohne Satz",
+  Rundungsrichtung unabhängig vom globalen Inkrement (Projekt-Overrides!),
+  Karten-Redaktion frisst den Folge-Separator nicht mehr +
+  Credential-Muster ergänzt (Kanon: Rust `redact_sensitive`),
+  Block-Schreibpfade melden `blocks-updated` (TopBar-Anker live),
+  Bulk-Confirm als EIN UPDATE, TopBar-Status als O(1)-Aggregate,
+  Daily-Close-Signal wird quittiert (kein Overlay-Replay beim Remount).
+  Bewusst offen: Schritt 2 hat kein "Einträge zusammenlegen"
+  (Plan-Abweichung; nachrüsten, wenn der Selbstversuch es vermisst);
+  `evidenceLines`/Fence-Stripping existieren je einmal in
+  assignment-core und narrative-core (verschiedene Prompt-Kontexte).
 
 **NACHWEIS/ABNAHME:** Narrative-Replika-Test (Fixture-Blöcke → Entwürfe,
 Redaktionsfilter greift). Selbstversuch über 5 Arbeitstage: Tagesabschluss

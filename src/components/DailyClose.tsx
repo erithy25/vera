@@ -13,13 +13,21 @@ import {
   blocksRepo,
   entriesRepo,
   projectsRepo,
+  isEngineSuggestion,
+  projectLabel,
   DbProjectWithClient,
   DbTimeEntry,
   DbWorkBlock,
 } from "../lib/db";
 import { generateEntriesForDay, regenerateNarrative } from "../lib/narratives";
 import { entryDateOf } from "../lib/narrative-core";
-import { nextDayStart, formatDuration, formatTimeOfDay, formatEuroFromCents } from "../lib/format";
+import {
+  nextDayStart,
+  formatDayLabel,
+  formatDuration,
+  formatTimeOfDay,
+  formatEuroFromCents,
+} from "../lib/format";
 
 interface DailyCloseProps {
   dayStart: number;
@@ -47,16 +55,19 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
 
   const loadBlocks = async () => {
     try {
-      const [b, p] = await Promise.all([
-        blocksRepo.forDay(dayStart, dayEnd),
-        projectsRepo.listWithClients(true),
-      ]);
-      setBlocks(b);
-      setProjects(p);
+      setBlocks(await blocksRepo.forDay(dayStart, dayEnd));
     } catch (err) {
       console.error("Failed to load daily-close blocks:", err);
     }
   };
+
+  // Projects can't change while this overlay is open — one fetch is enough.
+  useEffect(() => {
+    projectsRepo
+      .listWithClients(true)
+      .then(setProjects)
+      .catch((err) => console.error("Failed to load daily-close projects:", err));
+  }, []);
 
   useEffect(() => {
     loadBlocks();
@@ -65,30 +76,42 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
 
   const openBlocks = blocks.filter((b) => b.status === "open");
   const confirmedUnassigned = blocks.filter((b) => b.status === "confirmed" && b.project_id === null);
-  const suggested = openBlocks.filter(
-    (b) => b.project_id !== null && (b.assignment_source === "rule" || b.assignment_source === "llm")
-  );
+  const suggested = blocks.filter(isEngineSuggestion);
 
   const projectOf = (id: number) => projects.find((p) => p.id === id);
   const labelOf = (id: number) => {
     const p = projectOf(id);
-    return p ? `${p.client_name} — ${p.name}` : `project #${id}`;
+    return p ? projectLabel(p) : `project #${id}`;
   };
+  // null = billable but unpriced (nudge to set a rate); non-billable projects
+  // are deliberate and must not be counted as "missing a rate".
   const rateCentsOf = (id: number): number | null => {
     const p = projectOf(id);
     if (!p || !p.billable) return null;
     return p.hourly_rate_cents ?? p.client_rate_cents;
   };
+  const isBillable = (id: number): boolean => projectOf(id)?.billable === 1;
+  const centsFor = (e: DbTimeEntry): number | null => {
+    const rate = rateCentsOf(e.project_id);
+    return rate === null ? null : Math.round((e.rounded_minutes / 60) * rate);
+  };
+
+  // Every block write is announced so the TopBar anchor (and DayView behind
+  // this overlay) stay live.
+  const notifyBlocksUpdated = () => window.dispatchEvent(new CustomEvent("blocks-updated"));
 
   const setBlockStatus = async (id: number, status: "confirmed" | "discarded" | "open") => {
     await blocksRepo.setStatus(id, status);
+    notifyBlocksUpdated();
     await loadBlocks();
   };
 
   const confirmAllSuggested = async () => {
-    for (const b of suggested) {
-      await blocksRepo.setStatus(b.id, "confirmed");
-    }
+    await blocksRepo.setStatusMany(
+      suggested.map((b) => b.id),
+      "confirmed"
+    );
+    notifyBlocksUpdated();
     await loadBlocks();
   };
 
@@ -110,7 +133,13 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
 
   const saveNarrative = async (entry: DbTimeEntry) => {
     const text = (narrativeDrafts[entry.id] ?? "").trim();
-    if (!text || text === entry.narrative) return;
+    if (!text) {
+      // An emptied textarea must not silently keep the old text in the DB —
+      // restore it visibly instead.
+      setNarrativeDrafts((prev) => ({ ...prev, [entry.id]: entry.narrative }));
+      return;
+    }
+    if (text === entry.narrative) return;
     try {
       await entriesRepo.updateNarrative(entry.id, text);
       setEntries(await entriesRepo.forDate(entryDate));
@@ -122,10 +151,13 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
   const handleRegenerate = async (entry: DbTimeEntry) => {
     setRegenerating(entry.id);
     try {
+      // null = model unavailable/failed → keep the existing text. The write
+      // is a machine write: it must NOT mark the entry user-edited (that
+      // would poison the style examples and freeze the entry).
       const text = await regenerateNarrative(entry);
       if (text) {
         setNarrativeDrafts((prev) => ({ ...prev, [entry.id]: text }));
-        await entriesRepo.updateNarrative(entry.id, text);
+        await entriesRepo.setNarrative(entry.id, text);
         setEntries(await entriesRepo.forDate(entryDate));
       }
     } catch (err) {
@@ -148,13 +180,13 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
   const totals = useMemo(() => {
     let minutes = 0;
     let cents = 0;
-    let unpriced = 0;
+    let unpriced = 0; // billable projects WITHOUT a rate — not non-billable ones
     for (const e of entries) {
       minutes += e.rounded_minutes;
-      const rate = rateCentsOf(e.project_id);
-      if (rate !== null) {
-        cents += Math.round((e.rounded_minutes / 60) * rate);
-      } else {
+      const entryCents = centsFor(e);
+      if (entryCents !== null) {
+        cents += entryCents;
+      } else if (isBillable(e.project_id)) {
         unpriced++;
       }
     }
@@ -162,11 +194,7 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, projects]);
 
-  const dayLabel = new Date(dayStart).toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const dayLabel = formatDayLabel(dayStart);
 
   return (
     <div className="fixed inset-0 z-50 bg-bg-warm flex flex-col items-center overflow-y-auto py-10 select-none">
@@ -313,25 +341,29 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
                         {e.status}
                       </span>
                     )}
-                    <button
-                      onClick={() => handleRegenerate(e)}
-                      disabled={regenerating !== null}
-                      title="Regenerate this narrative"
-                      className={`p-1.5 rounded-lg text-text-muted hover:bg-active-hover hover:text-text-primary transition-colors cursor-pointer ${
-                        regenerating === e.id ? "animate-spin" : ""
-                      } disabled:opacity-40`}
-                    >
-                      <RotateCcw size={14} strokeWidth={1.5} />
-                    </button>
+                    {e.status === "draft" && (
+                      <button
+                        onClick={() => handleRegenerate(e)}
+                        disabled={regenerating !== null}
+                        title="Regenerate this narrative"
+                        className={`p-1.5 rounded-lg text-text-muted hover:bg-active-hover hover:text-text-primary transition-colors cursor-pointer ${
+                          regenerating === e.id ? "animate-spin" : ""
+                        } disabled:opacity-40`}
+                      >
+                        <RotateCcw size={14} strokeWidth={1.5} />
+                      </button>
+                    )}
                   </div>
+                  {/* Confirmed/exported entries are the billing record — read-only. */}
                   <textarea
                     value={narrativeDrafts[e.id] ?? e.narrative}
                     onChange={(ev) =>
                       setNarrativeDrafts((prev) => ({ ...prev, [e.id]: ev.target.value }))
                     }
                     onBlur={() => saveNarrative(e)}
+                    disabled={e.status !== "draft"}
                     rows={2}
-                    className="w-full px-3 py-2 bg-bg-warm border border-border-hairline rounded-xl font-sans text-[13px] text-text-primary outline-none focus:border-text-muted resize-y leading-relaxed"
+                    className="w-full px-3 py-2 bg-bg-warm border border-border-hairline rounded-xl font-sans text-[13px] text-text-primary outline-none focus:border-text-muted resize-y leading-relaxed disabled:opacity-60 disabled:resize-none"
                   />
                 </div>
               ))}
@@ -343,17 +375,20 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
           <div className="flex flex-col gap-4">
             <div className="card-style px-6 py-5 flex flex-col gap-3">
               {entries.map((e) => {
-                const rate = rateCentsOf(e.project_id);
+                const entryCents = centsFor(e);
                 return (
                   <div key={e.id} className="flex items-center gap-3">
                     <span className="flex-1 font-sans text-[13px] text-text-primary truncate">
                       {labelOf(e.project_id)}
+                      {!isBillable(e.project_id) && (
+                        <span className="text-text-faint"> · non-billable</span>
+                      )}
                     </span>
                     <span className="font-sans text-[13px] text-text-muted tabular-nums">
                       {formatDuration(e.rounded_minutes * 60000)}
                     </span>
                     <span className="font-sans text-[13px] text-text-primary tabular-nums min-w-[80px] text-right">
-                      {rate !== null ? formatEuroFromCents(Math.round((e.rounded_minutes / 60) * rate)) : "—"}
+                      {entryCents !== null ? formatEuroFromCents(entryCents) : "—"}
                     </span>
                   </div>
                 );
@@ -420,7 +455,8 @@ export const DailyClose: React.FC<DailyCloseProps> = ({ dayStart, onDone }) => {
               {step > 1 && (
                 <button
                   onClick={() => setStep(step - 1)}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-border-hairline font-sans text-[13px] font-medium text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer"
+                  disabled={generating}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-border-hairline font-sans text-[13px] font-medium text-text-muted hover:text-text-primary hover:bg-active-hover transition-all cursor-pointer disabled:opacity-40"
                 >
                   <ArrowLeft size={14} strokeWidth={1.5} />
                   Back

@@ -24,6 +24,8 @@ import {
   rulesRepo,
   settingsRepo,
   isActiveProject,
+  isEngineSuggestion,
+  projectLabel as clientProjectLabel,
   BlockStatus,
   DbWorkBlock,
   DbProjectWithClient,
@@ -35,17 +37,11 @@ import { DailyClose } from "./DailyClose";
 
 const suggestionKey = (s: RuleSuggestion) =>
   `${s.matcher_type}|${s.pattern}|${s.project_id}`;
-
-// A block whose assignment came from the engine (rule/LLM) and is still open
-// — exactly what the per-client "confirm all" chips act on.
-const isEngineSuggestion = (b: DbWorkBlock) =>
-  b.status === "open" &&
-  (b.assignment_source === "rule" || b.assignment_source === "llm") &&
-  b.project_id !== null;
 import {
   dayStartOf,
   nextDayStart,
   prevDayStart,
+  formatDayLabel,
   formatDuration,
   formatTimeOfDay,
 } from "../lib/format";
@@ -96,14 +92,19 @@ function AppIcon({ appSummary }: { appSummary: string | null }) {
 interface DayViewProps {
   // Incremented by App when something (TopBar anchor, tray) asks for the
   // daily close — a counter instead of an event so the request survives
-  // DayView not being mounted at dispatch time.
+  // DayView not being mounted at dispatch time. Must be acknowledged via
+  // onDailyCloseHandled, or it would replay on every remount.
   openDailyCloseSignal?: number;
+  onDailyCloseHandled?: () => void;
 }
 
 // "Today" — the daily review: the day as a sequence of work blocks with
 // confirm / assign / merge / split / discard, an evidence panel per block
 // ("why does Vera think this?"), search, and day navigation.
-export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) => {
+export const DayView: React.FC<DayViewProps> = ({
+  openDailyCloseSignal = 0,
+  onDailyCloseHandled,
+}) => {
   const [dayStart, setDayStart] = useState<number>(() => dayStartOf(Date.now()));
   const [blocks, setBlocks] = useState<DbWorkBlock[]>([]);
   const [projects, setProjects] = useState<DbProjectWithClient[]>([]);
@@ -166,12 +167,15 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayStart]);
 
-  // TopBar/App request the daily close — always for today.
+  // TopBar/App request the daily close — always for today. Acknowledge the
+  // signal so a remount doesn't replay it and pop the overlay uninvited.
   useEffect(() => {
     if (openDailyCloseSignal > 0) {
       setDayStart(dayStartOf(Date.now()));
       setCloseOpen(true);
+      onDailyCloseHandled?.();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openDailyCloseSignal]);
 
   const search = searchInput.trim().toLowerCase();
@@ -229,11 +233,7 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
     };
   }, [blocks]);
 
-  const dayLabel = new Date(dayStart).toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const dayLabel = formatDayLabel(dayStart);
 
   const refresh = async () => {
     try {
@@ -248,9 +248,13 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
+  // Announce every block write: our own "blocks-updated" listener reloads
+  // this view, and the TopBar anchor stays live too.
+  const notifyBlocksUpdated = () => window.dispatchEvent(new CustomEvent("blocks-updated"));
+
   const setBlockStatus = async (id: number, status: BlockStatus) => {
     await blocksRepo.setStatus(id, status);
-    await loadBlocks();
+    notifyBlocksUpdated();
   };
 
   const handleAssign = async (id: number, value: string) => {
@@ -277,7 +281,7 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
         console.error("Failed to record assignment feedback:", err);
       }
     }
-    await loadBlocks();
+    notifyBlocksUpdated();
   };
 
   const acceptSuggestion = async () => {
@@ -288,7 +292,7 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
       // Assignment (not segmentation) applies the rule — this also works on
       // days whose raw capture has already expired.
       await queueAssignment(dayStart, nextDayStart(dayStart));
-      await loadBlocks();
+      notifyBlocksUpdated();
     } catch (err) {
       console.error("Failed to create suggested rule:", err);
     }
@@ -309,17 +313,18 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
     const targets = active.filter(
       (b) => isEngineSuggestion(b) && clientOf(b)?.id === clientId
     );
-    for (const b of targets) {
-      await blocksRepo.setStatus(b.id, "confirmed");
-    }
-    await loadBlocks();
+    await blocksRepo.setStatusMany(
+      targets.map((b) => b.id),
+      "confirmed"
+    );
+    notifyBlocksUpdated();
   };
 
   const handleMerge = async () => {
     if (!selectionIsAdjacent) return;
     await blocksRepo.merge(selected);
     setSelected([]);
-    await loadBlocks();
+    notifyBlocksUpdated();
   };
 
   const openSplit = (b: DbWorkBlock) => {
@@ -344,7 +349,7 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
     }
     await blocksRepo.split(splitting.id, atMs);
     setSplitting(null);
-    await loadBlocks();
+    notifyBlocksUpdated();
   };
 
   // Picker options: every active project, plus the (archived) project a block
@@ -359,7 +364,7 @@ export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) =>
   };
 
   const projectLabel = (p: DbProjectWithClient) =>
-    `${p.client_name} — ${p.name}${p.archived || p.client_archived ? " (archived)" : ""}`;
+    `${clientProjectLabel(p)}${p.archived || p.client_archived ? " (archived)" : ""}`;
 
   const renderBlock = (b: DbWorkBlock) => {
     const evidence = parseEvidenceJson(b.evidence);

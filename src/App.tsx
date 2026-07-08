@@ -174,7 +174,10 @@ function App() {
             ) : currentView === "Clients & Projects" ? (
               <ClientsProjects />
             ) : (
-              <DayView openDailyCloseSignal={dailyCloseSignal} />
+              <DayView
+                openDailyCloseSignal={dailyCloseSignal}
+                onDailyCloseHandled={() => setDailyCloseSignal(0)}
+              />
             )
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center min-h-[300px]">

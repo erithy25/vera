@@ -246,6 +246,17 @@ export interface DbWorkBlock {
   user_edited: number;
 }
 
+// A block whose assignment came from the engine (rule/LLM) and is still open
+// — what "confirm all suggestions" acts on. ONE definition for every view.
+export const isEngineSuggestion = (b: DbWorkBlock) =>
+  b.status === "open" &&
+  (b.assignment_source === "rule" || b.assignment_source === "llm") &&
+  b.project_id !== null;
+
+// The canonical "Client — Project" label, shared by views and LLM prompts so
+// what the model reads matches what the user sees.
+export const projectLabel = (p: DbProjectWithClient) => `${p.client_name} — ${p.name}`;
+
 export const clientsRepo = {
   async list(includeArchived = false): Promise<DbClient[]> {
     const db = await getDb();
@@ -368,12 +379,51 @@ export const entriesRepo = {
   },
 
   // A user rewrite makes the narrative a style example for future prompts.
+  // Guarded to drafts: confirmed/exported entries are part of the billing
+  // record and are never silently rewritten.
   async updateNarrative(id: number, narrative: string): Promise<void> {
     const db = await getDb();
     await db.execute(
-      "UPDATE time_entries SET narrative = $1, user_edited = 1 WHERE id = $2",
+      "UPDATE time_entries SET narrative = $1, user_edited = 1 WHERE id = $2 AND status = 'draft'",
       [narrative, id]
     );
+  },
+
+  // Machine writes (the ↻ regenerate button): replace the text WITHOUT
+  // claiming a user edit — LLM output must never enter the style examples
+  // or freeze the entry against future regeneration.
+  async setNarrative(id: number, narrative: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE time_entries SET narrative = $1 WHERE id = $2 AND status = 'draft'",
+      [narrative, id]
+    );
+  },
+
+  // Refresh a kept (user-edited) draft's amounts when its blocks changed —
+  // the narrative stays, the minutes must never go stale (silent
+  // under-billing). Only drafts: closed entries keep their booked minutes.
+  async updateAmounts(
+    id: number,
+    minutes: number,
+    roundedMinutes: number,
+    sourceBlockIds: number[]
+  ): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE time_entries SET minutes = $1, rounded_minutes = $2, source_block_ids = $3 WHERE id = $4 AND status = 'draft'",
+      [minutes, roundedMinutes, JSON.stringify(sourceBlockIds), id]
+    );
+  },
+
+  // O(1) status line for the TopBar anchor — no need to ship whole rows.
+  async confirmedMinutesForDate(entryDate: string): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<{ m: number | null }[]>(
+      "SELECT SUM(rounded_minutes) AS m FROM time_entries WHERE entry_date = $1 AND status != 'draft'",
+      [entryDate]
+    );
+    return rows[0]?.m ?? 0;
   },
 
   async setStatusForDate(entryDate: string, from: EntryStatus, to: EntryStatus): Promise<void> {
@@ -609,6 +659,27 @@ export const blocksRepo = {
   async setStatus(id: number, status: BlockStatus): Promise<void> {
     const db = await getDb();
     await db.execute("UPDATE work_blocks SET status = $1 WHERE id = $2", [status, id]);
+  },
+
+  // One UPDATE for bulk confirms — a heavy day would otherwise pay one IPC
+  // round-trip per block.
+  async setStatusMany(ids: number[], status: BlockStatus): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const placeholders = ids.map((_, i) => `$${i + 2}`).join(", ");
+    await db.execute(
+      `UPDATE work_blocks SET status = $1 WHERE id IN (${placeholders})`,
+      [status, ...ids]
+    );
+  },
+
+  async countOpenForDay(startMs: number, endMs: number): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<{ n: number }[]>(
+      "SELECT COUNT(*) AS n FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND status = 'open'",
+      [startMs, endMs]
+    );
+    return rows[0]?.n ?? 0;
   },
 
   // Returns false when the row no longer exists (e.g. replaced by a recompute

@@ -78,14 +78,20 @@ export const Settings: React.FC = () => {
 
   const loadSettings = async () => {
     try {
-      const [paused, framesOn, apps, domains, dbChat, name] = await Promise.all([
-        settingsRepo.getCapturePaused(),
-        settingsRepo.getFramesCaptureEnabled(),
-        settingsRepo.getExcludedApps(),
-        settingsRepo.getExcludedDomains(),
-        settingsRepo.getChatModel(),
-        settingsRepo.getUserName(),
-      ]);
+      const [paused, framesOn, apps, domains, dbChat, name, lang, tone, template, inc, mode] =
+        await Promise.all([
+          settingsRepo.getCapturePaused(),
+          settingsRepo.getFramesCaptureEnabled(),
+          settingsRepo.getExcludedApps(),
+          settingsRepo.getExcludedDomains(),
+          settingsRepo.getChatModel(),
+          settingsRepo.getUserName(),
+          settingsRepo.getEntryLanguage(),
+          settingsRepo.getEntryTone(),
+          settingsRepo.getEntryTemplate(),
+          settingsRepo.getRoundingIncrement(),
+          settingsRepo.getRoundingMode(),
+        ]);
 
       setIsPaused(paused);
       setFramesEnabled(framesOn);
@@ -103,11 +109,11 @@ export const Settings: React.FC = () => {
       setChatModel(dbChat);
       setUserNameState(name);
 
-      setEntryLanguage(await settingsRepo.getEntryLanguage());
-      setEntryTone(await settingsRepo.getEntryTone());
-      setEntryTemplate(await settingsRepo.getEntryTemplate());
-      setRoundingIncrement(await settingsRepo.getRoundingIncrement());
-      setRoundingMode(await settingsRepo.getRoundingMode());
+      setEntryLanguage(lang);
+      setEntryTone(tone);
+      setEntryTemplate(template);
+      setRoundingIncrement(inc);
+      setRoundingMode(mode);
 
       // Initialize Rust state
       await invoke("update_privacy_settings", {
@@ -661,6 +667,8 @@ export const Settings: React.FC = () => {
           </div>
           <div className="flex flex-col gap-2">
             <span className="font-sans text-[13px] font-medium text-text-primary">Rounding direction</span>
+            {/* Never disabled: per-project overrides round even when the
+                global increment is "Exact". */}
             <div className="grid grid-cols-3 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
               {[
                 { l: "Nearest", v: "nearest" as const },
@@ -673,8 +681,7 @@ export const Settings: React.FC = () => {
                     setRoundingMode(opt.v);
                     await settingsRepo.setRoundingMode(opt.v);
                   }}
-                  disabled={roundingIncrement === 0}
-                  className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                  className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
                     roundingMode === opt.v
                       ? "bg-active-hover text-text-primary font-medium soft-shadow"
                       : "text-text-muted hover:text-text-primary"
@@ -684,6 +691,9 @@ export const Settings: React.FC = () => {
                 </button>
               ))}
             </div>
+            <span className="font-sans text-[11px] text-text-faint">
+              Applies wherever rounding is on — globally or per project.
+            </span>
           </div>
         </div>
       </div>

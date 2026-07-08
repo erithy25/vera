@@ -89,6 +89,12 @@ export function entryDateOf(dayStartMs: number): string {
   return `${y}-${m}-${dd}`;
 }
 
+/** Inverse of entryDateOf: local-midnight timestamp for a 'YYYY-MM-DD'. */
+export function dayStartMsOf(entryDate: string): number {
+  const [y, m, d] = entryDate.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+
 // ---------- Result redaction ----------
 
 function isLuhnValid(s: string): boolean {
@@ -109,14 +115,19 @@ function isLuhnValid(s: string): boolean {
 }
 
 /**
- * Defense in depth over the GENERATED text (mirrors the Rust capture-side
- * filter): even if sensitive strings survived into evidence, they never
- * reach a billing narrative. Credit cards (Luhn-checked), IBANs, long digit
- * runs, and API-key shapes become [redacted].
+ * Defense in depth over the GENERATED text: even if sensitive strings
+ * survived into evidence, they never reach a billing narrative. Credit cards
+ * (Luhn-checked), IBANs, long digit runs, API-key shapes, and
+ * credential-assignment phrases become [redacted].
+ *
+ * The canonical pattern list lives in the Rust capture-side filter
+ * (src-tauri/src/lib.rs, redact_sensitive) — keep this list in sync with it.
  */
 export function redactNarrative(text: string): string {
   let out = text;
-  out = out.replace(/\b(?:\d[ -]?){13,16}\b/g, (m) => {
+  // Card numbers start AND end on a digit — the pattern must not swallow the
+  // separator after the number ("Paid with [redacted]today").
+  out = out.replace(/\b\d(?:[ -]?\d){12,15}\b/g, (m) => {
     const clean = m.replace(/[^0-9]/g, "");
     return isLuhnValid(clean) ? "[redacted]" : m;
   });
@@ -128,6 +139,7 @@ export function redactNarrative(text: string): string {
     /sk_live_[a-zA-Z0-9]{24}/g,
     /ghp_[a-zA-Z0-9]{36,}/g,
     /AKIA[0-9A-Z]{16}/g,
+    /\b(?:bearer|token|password|secret|passwd|auth[_-]?token)\s*[:=]\s*["']?[a-zA-Z0-9_\-.]{16,}["']?/gi,
   ]) {
     out = out.replace(p, "[redacted]");
   }

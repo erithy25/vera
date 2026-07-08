@@ -4,6 +4,7 @@ import {
   roundMinutes,
   groupBlocksIntoDrafts,
   entryDateOf,
+  dayStartMsOf,
   redactNarrative,
   buildNarrativeMessages,
   parseNarrativeReply,
@@ -78,6 +79,12 @@ check("entryDateOf formats local YYYY-MM-DD", () => {
   assert.equal(entryDateOf(d.getTime()), "2026-07-08");
 });
 
+check("dayStartMsOf is the exact inverse of entryDateOf (local midnight)", () => {
+  const d = new Date(2026, 6, 8);
+  assert.equal(dayStartMsOf("2026-07-08"), d.getTime());
+  assert.equal(entryDateOf(dayStartMsOf("2026-01-02")), "2026-01-02");
+});
+
 check("redactNarrative masks cards (Luhn), IBANs, digit runs, API keys — keeps normal text", () => {
   assert.ok(redactNarrative("Paid with 4532015112830366 today").includes("[redacted]"));
   assert.ok(!redactNarrative("Ticket 1234-5678 review").includes("[redacted]")); // fails Luhn
@@ -85,6 +92,23 @@ check("redactNarrative masks cards (Luhn), IBANs, digit runs, API keys — keeps
   assert.ok(redactNarrative("Order id 12345678901 processed").includes("[redacted]"));
   assert.ok(redactNarrative("Key AKIAIOSFODNN7EXAMPLE leaked").includes("[redacted]"));
   assert.equal(redactNarrative("Reviewed the homepage draft."), "Reviewed the homepage draft.");
+});
+
+check("redactNarrative preserves the separator after a redacted card number", () => {
+  assert.equal(
+    redactNarrative("Paid with 4532015112830366 today"),
+    "Paid with [redacted] today" // not "[redacted]today"
+  );
+  assert.equal(
+    redactNarrative("Card 4532-0151-1283-0366 charged"),
+    "Card [redacted] charged"
+  );
+});
+
+check("redactNarrative masks credential-assignment phrases (canon: Rust redact_sensitive)", () => {
+  assert.ok(redactNarrative("saw password = hunter2hunter2hunter2 on screen").includes("[redacted]"));
+  assert.ok(redactNarrative('auth_token: "abcdef0123456789abcdef"').includes("[redacted]"));
+  assert.ok(!redactNarrative("Reset the password flow for the client portal.").includes("[redacted]"));
 });
 
 check("buildNarrativeMessages carries language, tone, template, style examples", () => {

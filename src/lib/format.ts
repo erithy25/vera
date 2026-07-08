@@ -30,6 +30,15 @@ export function formatDuration(ms: number): string {
   return `${mins} m`;
 }
 
+/** "Wednesday, July 8" — the day headline used across views. */
+export function formatDayLabel(dayStartMs: number): string {
+  return new Date(dayStartMs).toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 /** HH:MM (24h) — also valid as an <input type="time"> value. */
 export function formatTimeOfDay(ms: number): string {
   const d = new Date(ms);
