@@ -1,9 +1,21 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { settingsRepo } from "../lib/db";
+import { CheckCircle2 } from "lucide-react";
+import { blocksRepo, entriesRepo, settingsRepo } from "../lib/db";
+import { dayStartOf, nextDayStart, formatDuration } from "../lib/format";
+import { entryDateOf } from "../lib/narrative-core";
+
+// Today's daily-close state, shown next to the capture badge: how many blocks
+// still need review, or — once closed — the confirmed total. Clicking it opens
+// the daily-close flow (via App → DayView).
+interface CloseStatus {
+  openCount: number;
+  confirmedMinutes: number; // from confirmed/exported time entries
+}
 
 export const TopBar: React.FC = () => {
   const [isPaused, setIsPaused] = useState<boolean>(true); // Defaults to secure true (paused) on launch
+  const [closeStatus, setCloseStatus] = useState<CloseStatus | null>(null);
 
   useEffect(() => {
     async function loadPauseState() {
@@ -27,6 +39,34 @@ export const TopBar: React.FC = () => {
     return () => window.removeEventListener("capture-paused-updated", onPauseUpdated);
   }, []);
 
+  useEffect(() => {
+    const loadCloseStatus = async () => {
+      try {
+        const todayStart = dayStartOf(Date.now());
+        const [blocks, entries] = await Promise.all([
+          blocksRepo.forDay(todayStart, nextDayStart(todayStart)),
+          entriesRepo.forDate(entryDateOf(todayStart)),
+        ]);
+        setCloseStatus({
+          openCount: blocks.filter((b) => b.status === "open").length,
+          confirmedMinutes: entries
+            .filter((e) => e.status !== "draft")
+            .reduce((acc, e) => acc + e.rounded_minutes, 0),
+        });
+      } catch (err) {
+        console.error("Failed to load daily-close status:", err);
+      }
+    };
+    loadCloseStatus();
+    // The block engine and the daily close announce every change they make.
+    window.addEventListener("blocks-updated", loadCloseStatus);
+    window.addEventListener("entries-updated", loadCloseStatus);
+    return () => {
+      window.removeEventListener("blocks-updated", loadCloseStatus);
+      window.removeEventListener("entries-updated", loadCloseStatus);
+    };
+  }, []);
+
   const togglePause = async () => {
     const nextState = !isPaused;
     setIsPaused(nextState);
@@ -39,8 +79,35 @@ export const TopBar: React.FC = () => {
     }
   };
 
+  const dayClosed =
+    closeStatus !== null && closeStatus.confirmedMinutes > 0 && closeStatus.openCount === 0;
+
   return (
-    <div className="flex justify-end items-center py-6 px-10 w-full">
+    <div className="flex justify-end items-center gap-2 py-6 px-10 w-full">
+      {closeStatus !== null && (
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent("vera-open-daily-close"))}
+          title={
+            dayClosed
+              ? "Today is closed — reopen the daily close"
+              : "Review today's blocks and close the day"
+          }
+          className={`flex items-center gap-2 px-3 py-1.5 bg-card-surface border rounded-full soft-shadow select-none transition-all duration-200 active:scale-95 cursor-pointer ${
+            dayClosed
+              ? "border-emerald-500/25 text-emerald-600 hover:bg-emerald-500/5"
+              : "border-border-hairline text-text-muted hover:bg-active-hover hover:text-text-primary"
+          }`}
+        >
+          <CheckCircle2 size={13} strokeWidth={1.75} />
+          <span className="text-[12px] font-sans font-medium tracking-wider uppercase">
+            {dayClosed
+              ? `Day closed · ${formatDuration(closeStatus.confirmedMinutes * 60000)}`
+              : closeStatus.openCount > 0
+                ? `Close the day · ${closeStatus.openCount} open`
+                : "Close the day"}
+          </span>
+        </button>
+      )}
       <button
         onClick={togglePause}
         title={isPaused ? "Resume capture" : "Pause capture"}

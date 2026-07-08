@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test:segmentation": "esbuild src/lib/segmentation.ts --bundle --format=esm --outfile=tests/.segmentation.bundle.mjs && node tests/segmentation.test.mjs",
     "test:assignment": "esbuild src/lib/assignment-core.ts --bundle --format=esm --outfile=tests/.assignment-core.bundle.mjs && node tests/assignment.test.mjs",
-    "test": "npm run test:segmentation && npm run test:assignment"
+    "test:narratives": "esbuild src/lib/narrative-core.ts --bundle --format=esm --outfile=tests/.narrative-core.bundle.mjs && node tests/narratives.test.mjs",
+    "test": "npm run test:segmentation && npm run test:assignment && npm run test:narratives"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.0.0",

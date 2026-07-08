@@ -269,6 +269,21 @@ export const ClientsProjects: React.FC = () => {
                           : "no rate"}
                     </span>
                   )}
+                  <select
+                    value={p.rounding_increment === null ? "" : String(p.rounding_increment)}
+                    onChange={async (e) => {
+                      const v = e.target.value === "" ? null : Number(e.target.value);
+                      await projectsRepo.setRounding(p.id, v);
+                      await load();
+                    }}
+                    title="Time rounding for this project (overrides the global setting)"
+                    className="px-1.5 py-0.5 border border-border-hairline rounded-lg font-sans text-[11px] text-text-muted bg-card-surface outline-none cursor-pointer"
+                  >
+                    <option value="">Global rounding</option>
+                    <option value="0">Exact</option>
+                    <option value="6">6 min</option>
+                    <option value="15">15 min</option>
+                  </select>
                   <div className="flex-1" />
                   <button
                     onClick={async () => {

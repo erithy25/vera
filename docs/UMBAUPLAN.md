@@ -447,6 +447,21 @@ Tagesabschluss dauert unter 5 Minuten. Das ist die direkte Antwort auf die
 **UMGEBAUT:**
 - `src/components/DayView.tsx`: bekommt den Einstieg "Tag abschließen".
 - `src/lib/db.ts`: `entriesRepo` (CRUD, `forRange`, `markExported`).
+- Umsetzungsnotizen Schicht 4: Die pure Logik (Rundung, Draft-Gruppierung,
+  Prompt-Bau, Redaktionsfilter, Fallback) liegt testbar in
+  `src/lib/narrative-core.ts` (`npm run test:narratives`); der Engine-Teil
+  in `src/lib/narratives.ts`. Eigentums-Semantik analog ENGINE_OWNED:
+  Regeneration löscht nur `status='draft' AND user_edited=0`
+  (`deleteUntouchedDrafts`) — Nutzer-Edits (werden zu Stilbeispielen für
+  künftige Prompts) und bestätigte/exportierte Einträge überleben jede
+  Regeneration. Der Redaktionsfilter (Luhn-Karten, IBAN, lange
+  Ziffernfolgen, API-Key-Muster) läuft über JEDEN LLM-Output; ohne
+  laufendes Ollama entsteht ein deterministischer Evidence-Fallback — der
+  Tagesabschluss funktioniert komplett offline. Rundung rundet echte Arbeit
+  nie auf 0 (Minimum 1 Inkrement). TopBar-Anker → App
+  (`vera-open-daily-close`) → DayView öffnet das Overlay über einen
+  Counter-Prop (übersteht nicht-gemountetes DayView). Migration v9 +
+  `entriesRepo` als Python-Replika bewiesen (19 Checks).
 
 **NACHWEIS/ABNAHME:** Narrative-Replika-Test (Fixture-Blöcke → Entwürfe,
 Redaktionsfilter greift). Selbstversuch über 5 Arbeitstage: Tagesabschluss

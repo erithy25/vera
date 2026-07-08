@@ -1850,6 +1850,32 @@ pub fn run() {
         );
       ",
       kind: MigrationKind::Up,
+    },
+    // v9 — billing entries (the daily close): one narrative per project+day,
+    // built from confirmed blocks. user_edited marks narratives the user
+    // rewrote — they become style few-shots for future generations. Projects
+    // gain an optional per-project rounding override (law-firm 6-min billing
+    // prepared).
+    Migration {
+      version: 9,
+      description: "create_time_entries",
+      sql: "
+        CREATE TABLE IF NOT EXISTS time_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          entry_date TEXT NOT NULL,
+          minutes INTEGER NOT NULL,
+          rounded_minutes INTEGER NOT NULL,
+          narrative TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          source_block_ids TEXT NOT NULL,
+          user_edited INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_entries_date ON time_entries(entry_date);
+        ALTER TABLE projects ADD COLUMN rounding_increment INTEGER;
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 

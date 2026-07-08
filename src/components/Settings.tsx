@@ -43,6 +43,13 @@ export const Settings: React.FC = () => {
   const [appInput, setAppInput] = useState("");
   const [domainInput, setDomainInput] = useState("");
 
+  // Billing-entry generation preferences
+  const [entryLanguage, setEntryLanguage] = useState<"en" | "de">("en");
+  const [entryTone, setEntryTone] = useState<"concise" | "detailed">("concise");
+  const [entryTemplate, setEntryTemplate] = useState<"agency" | "consulting" | "law">("agency");
+  const [roundingIncrement, setRoundingIncrement] = useState<number>(0);
+  const [roundingMode, setRoundingMode] = useState<"nearest" | "up" | "down">("nearest");
+
   // Local AI state (Ollama — the only engine; nothing leaves the device)
   const [ollamaOnline, setOllamaOnline] = useState<boolean>(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -95,6 +102,12 @@ export const Settings: React.FC = () => {
       setExcludedDomains(domains);
       setChatModel(dbChat);
       setUserNameState(name);
+
+      setEntryLanguage(await settingsRepo.getEntryLanguage());
+      setEntryTone(await settingsRepo.getEntryTone());
+      setEntryTemplate(await settingsRepo.getEntryTemplate());
+      setRoundingIncrement(await settingsRepo.getRoundingIncrement());
+      setRoundingMode(await settingsRepo.getRoundingMode());
 
       // Initialize Rust state
       await invoke("update_privacy_settings", {
@@ -562,6 +575,117 @@ export const Settings: React.FC = () => {
             {ollamaError}
           </div>
         )}
+      </div>
+
+      {/* Billing entries: narrative style + rounding */}
+      <div className="card-style p-6 flex flex-col gap-5">
+        <div className="flex flex-col gap-0.5 border-b border-border-hairline pb-4">
+          <h2 className="font-serif text-[20px] font-normal text-text-primary">Billing Entries</h2>
+          <p className="font-sans text-[13px] text-text-faint">
+            How the daily close writes and rounds your entries. Rounding can be overridden per project in Clients & Projects.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="flex flex-col gap-2">
+            <span className="font-sans text-[13px] font-medium text-text-primary">Language</span>
+            <select
+              value={entryLanguage}
+              onChange={async (e) => {
+                const v = e.target.value as "en" | "de";
+                setEntryLanguage(v);
+                await settingsRepo.setEntryLanguage(v);
+              }}
+              className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none cursor-pointer"
+            >
+              <option value="en">English</option>
+              <option value="de">German</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="font-sans text-[13px] font-medium text-text-primary">Tone</span>
+            <select
+              value={entryTone}
+              onChange={async (e) => {
+                const v = e.target.value as "concise" | "detailed";
+                setEntryTone(v);
+                await settingsRepo.setEntryTone(v);
+              }}
+              className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none cursor-pointer"
+            >
+              <option value="concise">Concise (1–2 sentences)</option>
+              <option value="detailed">Detailed (2–3 sentences)</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="font-sans text-[13px] font-medium text-text-primary">Style</span>
+            <select
+              value={entryTemplate}
+              onChange={async (e) => {
+                const v = e.target.value as "agency" | "consulting" | "law";
+                setEntryTemplate(v);
+                await settingsRepo.setEntryTemplate(v);
+              }}
+              className="px-3 py-2 bg-card-surface border border-border-hairline rounded-xl font-sans text-[13px] outline-none cursor-pointer"
+            >
+              <option value="agency">Agency / Studio</option>
+              <option value="consulting">Consulting</option>
+              <option value="law">Law firm</option>
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="flex flex-col gap-2">
+            <span className="font-sans text-[13px] font-medium text-text-primary">Round time to</span>
+            <div className="grid grid-cols-3 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+              {[
+                { l: "Exact", v: 0 },
+                { l: "6 min", v: 6 },
+                { l: "15 min", v: 15 },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  onClick={async () => {
+                    setRoundingIncrement(opt.v);
+                    await settingsRepo.setRoundingIncrement(opt.v);
+                  }}
+                  className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer ${
+                    roundingIncrement === opt.v
+                      ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                      : "text-text-muted hover:text-text-primary"
+                  }`}
+                >
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="font-sans text-[13px] font-medium text-text-primary">Rounding direction</span>
+            <div className="grid grid-cols-3 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
+              {[
+                { l: "Nearest", v: "nearest" as const },
+                { l: "Up", v: "up" as const },
+                { l: "Down", v: "down" as const },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  onClick={async () => {
+                    setRoundingMode(opt.v);
+                    await settingsRepo.setRoundingMode(opt.v);
+                  }}
+                  disabled={roundingIncrement === 0}
+                  className={`py-2 rounded-lg font-sans text-[12px] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                    roundingMode === opt.v
+                      ? "bg-active-hover text-text-primary font-medium soft-shadow"
+                      : "text-text-muted hover:text-text-primary"
+                  }`}
+                >
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div id="settings-privacy" className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-2 scroll-mt-6">

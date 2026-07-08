@@ -219,6 +219,7 @@ export interface DbProject {
   hourly_rate_cents: number | null;
   archived: number;
   created_at: number;
+  rounding_increment: number | null; // per-project override; null = global setting
 }
 
 // Project joined with its client, for pickers and rate resolution.
@@ -299,6 +300,120 @@ export const projectsRepo = {
   async setArchived(id: number, archived: boolean): Promise<void> {
     const db = await getDb();
     await db.execute("UPDATE projects SET archived = $1 WHERE id = $2", [archived ? 1 : 0, id]);
+  },
+
+  // Per-project rounding override (null = use the global setting).
+  async setRounding(id: number, increment: number | null): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE projects SET rounding_increment = $1 WHERE id = $2", [increment, id]);
+  },
+};
+
+// --- Billing entries (the daily close) ---
+
+export type EntryStatus = "draft" | "confirmed" | "exported";
+
+export interface DbTimeEntry {
+  id: number;
+  project_id: number;
+  entry_date: string; // 'YYYY-MM-DD' (local)
+  minutes: number;
+  rounded_minutes: number;
+  narrative: string;
+  status: EntryStatus;
+  source_block_ids: string; // JSON array of work_blocks ids
+  user_edited: number;
+  created_at: number;
+}
+
+export const entriesRepo = {
+  async create(entry: {
+    project_id: number;
+    entry_date: string;
+    minutes: number;
+    rounded_minutes: number;
+    narrative: string;
+    source_block_ids: number[];
+  }): Promise<number> {
+    const db = await getDb();
+    const result = await db.execute(
+      "INSERT INTO time_entries (project_id, entry_date, minutes, rounded_minutes, narrative, status, source_block_ids, user_edited, created_at) VALUES ($1, $2, $3, $4, $5, 'draft', $6, 0, $7)",
+      [
+        entry.project_id,
+        entry.entry_date,
+        entry.minutes,
+        entry.rounded_minutes,
+        entry.narrative,
+        JSON.stringify(entry.source_block_ids),
+        Date.now(),
+      ]
+    );
+    return result.lastInsertId!;
+  },
+
+  async forDate(entryDate: string): Promise<DbTimeEntry[]> {
+    const db = await getDb();
+    return db.select<DbTimeEntry[]>(
+      "SELECT * FROM time_entries WHERE entry_date = $1 ORDER BY project_id ASC, id ASC",
+      [entryDate]
+    );
+  },
+
+  async forRange(fromDate: string, toDate: string): Promise<DbTimeEntry[]> {
+    const db = await getDb();
+    return db.select<DbTimeEntry[]>(
+      "SELECT * FROM time_entries WHERE entry_date >= $1 AND entry_date <= $2 ORDER BY entry_date ASC, project_id ASC",
+      [fromDate, toDate]
+    );
+  },
+
+  // A user rewrite makes the narrative a style example for future prompts.
+  async updateNarrative(id: number, narrative: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE time_entries SET narrative = $1, user_edited = 1 WHERE id = $2",
+      [narrative, id]
+    );
+  },
+
+  async setStatusForDate(entryDate: string, from: EntryStatus, to: EntryStatus): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE time_entries SET status = $1 WHERE entry_date = $2 AND status = $3",
+      [to, entryDate, from]
+    );
+  },
+
+  async markExported(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ");
+    await db.execute(
+      `UPDATE time_entries SET status = 'exported' WHERE id IN (${placeholders}) AND status = 'confirmed'`,
+      ids
+    );
+  },
+
+  // Draft regeneration replaces only what the engine owns: untouched drafts.
+  // User-edited drafts and confirmed/exported entries are never deleted.
+  async deleteUntouchedDrafts(entryDate: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "DELETE FROM time_entries WHERE entry_date = $1 AND status = 'draft' AND user_edited = 0",
+      [entryDate]
+    );
+  },
+
+  // Recent narratives the user rewrote — style few-shots for generation
+  // (same-project examples first, then most recent).
+  async recentEditedNarratives(projectId: number, limit = 5): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db.select<{ narrative: string }[]>(
+      `SELECT narrative FROM time_entries WHERE user_edited = 1
+       ORDER BY (project_id = $1) DESC, created_at DESC LIMIT $2`,
+      [projectId, limit]
+    );
+    return rows.map((r) => r.narrative);
   },
 };
 
@@ -790,6 +905,70 @@ export const settingsRepo = {
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_complete', $1)",
       [complete ? "true" : "false"]
     );
+  },
+
+  // --- Billing-entry generation preferences ---
+
+  async getEntryLanguage(): Promise<"en" | "de"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'entry_language'");
+    return rows.length > 0 && rows[0].value === "de" ? "de" : "en";
+  },
+
+  async setEntryLanguage(lang: "en" | "de"): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('entry_language', $1)", [lang]);
+  },
+
+  async getEntryTone(): Promise<"concise" | "detailed"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'entry_tone'");
+    return rows.length > 0 && rows[0].value === "detailed" ? "detailed" : "concise";
+  },
+
+  async setEntryTone(tone: "concise" | "detailed"): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('entry_tone', $1)", [tone]);
+  },
+
+  async getEntryTemplate(): Promise<"agency" | "consulting" | "law"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'entry_template'");
+    const v = rows.length > 0 ? rows[0].value : "";
+    return v === "consulting" || v === "law" ? v : "agency";
+  },
+
+  async setEntryTemplate(template: "agency" | "consulting" | "law"): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('entry_template', $1)", [template]);
+  },
+
+  // Global rounding: increment 0 (exact) / 6 / 15 minutes.
+  async getRoundingIncrement(): Promise<number> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'rounding_increment'");
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (n === 0 || n === 6 || n === 15) return n;
+    }
+    return 0;
+  },
+
+  async setRoundingIncrement(inc: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('rounding_increment', $1)", [String(inc)]);
+  },
+
+  async getRoundingMode(): Promise<"nearest" | "up" | "down"> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = 'rounding_mode'");
+    const v = rows.length > 0 ? rows[0].value : "";
+    return v === "up" || v === "down" ? v : "nearest";
+  },
+
+  async setRoundingMode(mode: "nearest" | "up" | "down"): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('rounding_mode', $1)", [mode]);
   },
 
   // Rule suggestions the user dismissed — never re-nag for the same

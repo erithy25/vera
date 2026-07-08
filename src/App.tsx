@@ -13,6 +13,9 @@ import { invoke } from "@tauri-apps/api/core";
 
 function App() {
   const [currentView, setCurrentView] = useState<string>("Today");
+  // Bumped when the TopBar anchor asks for the daily close — DayView reacts
+  // to the counter, so the request survives DayView not being mounted yet.
+  const [dailyCloseSignal, setDailyCloseSignal] = useState<number>(0);
   const [dbReady, setDbReady] = useState<boolean>(false);
   // True only when DB init actually succeeded — the block engine must never
   // write against a broken/unmigrated database (dbReady alone also covers the
@@ -76,6 +79,17 @@ function App() {
     const onReset = () => setOnboardingComplete(false);
     window.addEventListener("onboarding-reset", onReset);
     return () => window.removeEventListener("onboarding-reset", onReset);
+  }, []);
+
+  // The TopBar anchor (any view) opens the daily close: switch to Today and
+  // hand DayView the request via the counter prop.
+  useEffect(() => {
+    const onOpenDailyClose = () => {
+      setCurrentView("Today");
+      setDailyCloseSignal((n) => n + 1);
+    };
+    window.addEventListener("vera-open-daily-close", onOpenDailyClose);
+    return () => window.removeEventListener("vera-open-daily-close", onOpenDailyClose);
   }, []);
 
   // The backend writes activity/frames to SQLite directly (so capture
@@ -160,7 +174,7 @@ function App() {
             ) : currentView === "Clients & Projects" ? (
               <ClientsProjects />
             ) : (
-              <DayView />
+              <DayView openDailyCloseSignal={dailyCloseSignal} />
             )
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center min-h-[300px]">

@@ -31,6 +31,7 @@ import {
 import { recomputeDay } from "../lib/blocks";
 import { assignmentEngineUnavailableReason, queueAssignment } from "../lib/assign";
 import { suggestRule, RuleSuggestion } from "../lib/assignment-core";
+import { DailyClose } from "./DailyClose";
 
 const suggestionKey = (s: RuleSuggestion) =>
   `${s.matcher_type}|${s.pattern}|${s.project_id}`;
@@ -92,10 +93,17 @@ function AppIcon({ appSummary }: { appSummary: string | null }) {
   return <FileText size={16} strokeWidth={1.5} className={cls} />;
 }
 
+interface DayViewProps {
+  // Incremented by App when something (TopBar anchor, tray) asks for the
+  // daily close — a counter instead of an event so the request survives
+  // DayView not being mounted at dispatch time.
+  openDailyCloseSignal?: number;
+}
+
 // "Today" — the daily review: the day as a sequence of work blocks with
 // confirm / assign / merge / split / discard, an evidence panel per block
 // ("why does Vera think this?"), search, and day navigation.
-export const DayView: React.FC = () => {
+export const DayView: React.FC<DayViewProps> = ({ openDailyCloseSignal = 0 }) => {
   const [dayStart, setDayStart] = useState<number>(() => dayStartOf(Date.now()));
   const [blocks, setBlocks] = useState<DbWorkBlock[]>([]);
   const [projects, setProjects] = useState<DbProjectWithClient[]>([]);
@@ -109,6 +117,8 @@ export const DayView: React.FC = () => {
   const [suggestion, setSuggestion] = useState<RuleSuggestion | null>(null);
   // Why the local model is not assigning right now (Ollama offline / no model).
   const [engineHint, setEngineHint] = useState<string | null>(null);
+  // The daily-close overlay (sweep → narratives → totals) for the viewed day.
+  const [closeOpen, setCloseOpen] = useState(false);
 
   const isToday = dayStart === dayStartOf(Date.now());
   // Recompute is only offered where raw capture is guaranteed fresh — the
@@ -155,6 +165,14 @@ export const DayView: React.FC = () => {
     return () => window.removeEventListener("blocks-updated", onBlocksUpdated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayStart]);
+
+  // TopBar/App request the daily close — always for today.
+  useEffect(() => {
+    if (openDailyCloseSignal > 0) {
+      setDayStart(dayStartOf(Date.now()));
+      setCloseOpen(true);
+    }
+  }, [openDailyCloseSignal]);
 
   const search = searchInput.trim().toLowerCase();
   const matchesSearch = (b: DbWorkBlock) =>
@@ -558,6 +576,14 @@ export const DayView: React.FC = () => {
               <RotateCcw size={14} strokeWidth={1.5} />
             </button>
           )}
+          <button
+            onClick={() => setCloseOpen(true)}
+            title="Confirm the day's blocks, review narratives, close the day"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-text-primary text-card-surface font-sans text-[13px] font-medium hover:bg-text-muted transition-all cursor-pointer active:scale-[0.98]"
+          >
+            <Check size={14} strokeWidth={2} />
+            Close the day
+          </button>
         </div>
       </div>
 
@@ -715,6 +741,17 @@ export const DayView: React.FC = () => {
         <Lock size={12} strokeWidth={1.5} />
         Built on this Mac from your local capture · raw recordings expire, blocks and their evidence remain · not a single byte leaves your device
       </span>
+
+      {/* Daily close overlay (sweep → narratives → totals) */}
+      {closeOpen && (
+        <DailyClose
+          dayStart={dayStart}
+          onDone={() => {
+            setCloseOpen(false);
+            loadBlocks();
+          }}
+        />
+      )}
     </div>
   );
 };
