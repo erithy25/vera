@@ -526,7 +526,7 @@ function Pricing() {
 const faqs = [
   {
     q: "Does my data really never leave the device?",
-    a: "Yes — by architecture, not by promise. Capture, text recognition, the database and the AI model (via Ollama) run entirely on your Mac; the database is encrypted. There is no account, no server, no telemetry. The app's only network contact is the update check — even your license is verified on-device, so buying and activating sends nothing.",
+    a: "Yes — by architecture, not by promise. Capture, text recognition, the database and the AI model (via Ollama) run entirely on your Mac; the database is encrypted. There is no account, no server, no telemetry. Nothing leaves automatically: the app's only unprompted network contact is the update check, and your license is verified on-device. The one time content is transmitted is when you explicitly push to a billing integration you connected — and even then only the confirmed entry (date, project, billed minutes, narrative), never your captured activity, screenshots or evidence. You control every export.",
   },
   {
     q: "Which permissions does Vera need?",
@@ -639,6 +639,7 @@ export function App() {
           <nav className="hidden md:flex items-center gap-8 font-sans text-[13px] text-text-muted">
             <a href="#how" className="hover:text-text-primary transition-colors">How it works</a>
             <a href="#calculator" className="hover:text-text-primary transition-colors">Calculator</a>
+            <a href="#integrations" className="hover:text-text-primary transition-colors">Integrations</a>
             <a href="#pricing" className="hover:text-text-primary transition-colors">Pricing</a>
             <a href="#private" className="hover:text-text-primary transition-colors">Privacy</a>
             <a href="#faq" className="hover:text-text-primary transition-colors">FAQ</a>
@@ -758,6 +759,35 @@ export function App() {
               Firm waitlist
             </a>
           </div>
+        </section>
+
+        {/* Integrations */}
+        <section id="integrations" className="max-w-[1120px] mx-auto px-6 sm:px-10 mt-28 sm:mt-40 scroll-mt-20">
+          <div className="flex flex-col items-center text-center gap-3 mb-12">
+            <span className="font-sans text-[12px] font-semibold tracking-[0.2em] uppercase text-text-faint">Integrations</span>
+            <h2 className="font-serif text-[clamp(32px,5vw,48px)] tracking-tight">Straight into your billing tool.</h2>
+            <p className="font-sans text-[15px] text-text-muted max-w-[560px] leading-relaxed">
+              Map each Vera project to your billing system once, then push a confirmed day
+              with one click. One-way and opt-in — Vera sends only the entry (date, project,
+              billed minutes, narrative), never your captured activity.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            {[
+              { name: "MOCO", body: "Activities land on the right project and task, with hours and your narrative." },
+              { name: "awork", body: "Time entries appear on the mapped project, billable, ready to invoice." },
+              { name: "Clio", body: "Time entries post to the matter — on-device by architecture, fitting for legal work." },
+            ].map((it) => (
+              <div key={it.name} className="card-style p-7 flex flex-col gap-2">
+                <h3 className="font-serif text-[20px] text-text-primary">Vera + {it.name}</h3>
+                <p className="font-sans text-[14px] text-text-muted leading-relaxed">{it.body}</p>
+              </div>
+            ))}
+          </div>
+          <p className="font-sans text-[12px] text-text-faint text-center mt-6 max-w-[620px] mx-auto leading-relaxed">
+            Duplicate-safe: an entry already pushed to a tool is never sent twice. More systems
+            (and DATEV / RA-MICRO for firms) follow.
+          </p>
         </section>
 
         {/* Pricing */}

@@ -1883,6 +1883,37 @@ pub fn run() {
         ALTER TABLE projects ADD COLUMN rounding_increment INTEGER;
       ",
       kind: MigrationKind::Up,
+    },
+    // v10 — direct integrations (Schicht 7): map a Vera project to a target
+    // billing system's project/matter (integration_links), and record which
+    // confirmed entry was pushed where (integration_pushes) so the same entry
+    // is never sent twice. Both are user-driven exports of confirmed billing
+    // data only — never capture, screenshots, OCR, evidence, or AI data.
+    Migration {
+      version: 10,
+      description: "create_integration_tables",
+      sql: "
+        CREATE TABLE IF NOT EXISTS integration_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider TEXT NOT NULL,
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          remote_id TEXT NOT NULL,
+          remote_label TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_links_provider_project
+          ON integration_links(provider, project_id);
+        CREATE TABLE IF NOT EXISTS integration_pushes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entry_id INTEGER NOT NULL REFERENCES time_entries(id),
+          provider TEXT NOT NULL,
+          remote_id TEXT NOT NULL,
+          pushed_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pushes_entry_provider
+          ON integration_pushes(entry_id, provider);
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 

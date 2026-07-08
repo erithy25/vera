@@ -467,6 +467,72 @@ export const entriesRepo = {
   },
 };
 
+export interface DbIntegrationLink {
+  id: number;
+  provider: string;
+  project_id: number;
+  remote_id: string;
+  remote_label: string | null;
+  created_at: number;
+}
+
+// Integration state (Schicht 7): per-provider project mappings and a record
+// of which confirmed entry was already pushed where (duplicate protection).
+export const integrationsRepo = {
+  async linksFor(provider: string): Promise<DbIntegrationLink[]> {
+    const db = await getDb();
+    return db.select<DbIntegrationLink[]>(
+      "SELECT * FROM integration_links WHERE provider = $1 ORDER BY project_id ASC",
+      [provider]
+    );
+  },
+
+  // One mapping per (provider, project): re-mapping replaces, never duplicates.
+  async setLink(
+    provider: string,
+    projectId: number,
+    remoteId: string,
+    remoteLabel: string | null
+  ): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO integration_links (provider, project_id, remote_id, remote_label, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT(provider, project_id) DO UPDATE SET remote_id = excluded.remote_id, remote_label = excluded.remote_label`,
+      [provider, projectId, remoteId.trim(), remoteLabel, Date.now()]
+    );
+  },
+
+  async removeLink(provider: string, projectId: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "DELETE FROM integration_links WHERE provider = $1 AND project_id = $2",
+      [provider, projectId]
+    );
+  },
+
+  // The dedup set the push planner consumes: entries already synced to this provider.
+  async pushedEntryIds(provider: string): Promise<Set<number>> {
+    const db = await getDb();
+    const rows = await db.select<{ entry_id: number }[]>(
+      "SELECT entry_id FROM integration_pushes WHERE provider = $1",
+      [provider]
+    );
+    return new Set(rows.map((r) => r.entry_id));
+  },
+
+  // Idempotent: a second push of the same entry to the same provider is a no-op.
+  async recordPush(entryId: number, provider: string, remoteId: string): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO integration_pushes (entry_id, provider, remote_id, pushed_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT(entry_id, provider) DO NOTHING`,
+      [entryId, provider, remoteId, Date.now()]
+    );
+  },
+};
+
 // The engine-ownership invariant, in ONE place: the segmentation engine owns
 // exactly the blocks that are open and untouched by the user. preservedForDay
 // is its negation; the recompute DELETE and the overlap repair both use it.
@@ -1129,6 +1195,38 @@ export const settingsRepo = {
   async clearLicenseKey(): Promise<void> {
     const db = await getDb();
     await db.execute("DELETE FROM settings WHERE key = 'license_key'");
+  },
+
+  // --- Integration accounts (Schicht 7) ---
+
+  // Per-provider credential/config bag ({apiKey, subdomain, …}). Stored on
+  // device only; it leaves the Mac solely as the auth header when YOU push to
+  // that provider. (Vault-encrypting these is a documented macOS follow-up.)
+  async getIntegrationAccount(provider: string): Promise<Record<string, string> | null> {
+    const db = await getDb();
+    const rows = await db.select<any[]>("SELECT value FROM settings WHERE key = $1", [
+      `integration_${provider}`,
+    ]);
+    if (rows.length === 0) return null;
+    try {
+      const parsed = JSON.parse(rows[0].value);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async setIntegrationAccount(provider: string, config: Record<string, string>): Promise<void> {
+    const db = await getDb();
+    await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)", [
+      `integration_${provider}`,
+      JSON.stringify(config),
+    ]);
+  },
+
+  async clearIntegrationAccount(provider: string): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM settings WHERE key = $1", [`integration_${provider}`]);
   },
 
   // Local-midnight-agnostic timestamp of the very first launch — anchors the

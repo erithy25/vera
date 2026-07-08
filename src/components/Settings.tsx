@@ -7,6 +7,7 @@ import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";
 import { domainOf } from "../lib/segmentation";
 import { LicenseCard } from "./LicenseCard";
+import { IntegrationsCard } from "./IntegrationsCard";
 
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
@@ -701,6 +702,9 @@ export const Settings: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Integrations (push entries into your billing tool) */}
+      <IntegrationsCard />
 
       <div id="settings-privacy" className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-2 scroll-mt-6">
         {/* Left Column Controls */}

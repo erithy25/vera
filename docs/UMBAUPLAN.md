@@ -625,8 +625,33 @@ Settings (verschlüsselt via Vault), Projekt-Mapping-UI (Vera-Projekt ↔
 Zielsystem-Projekt), Push bestätigter Einträge, Duplikatsschutz über
 `time_entries.status='exported'` + Referenz-ID. Jede Integration bekommt
 eine eigene Landingpage auf der Website ("Vera + Moco").
+**UMGEBAUT / Umsetzungsnotizen Schicht 7:** Der Transport läuft über den
+Frontend-`fetch` (die Webview hat `csp: null`) — KEIN neuer Rust/reqwest-Code,
+alles hier verifizierbar; einzige Rust-Änderung ist die Migration v10 (SQL,
+python-replika-bewiesen). Reine Adapter (Moco/awork/Clio) in
+`src/lib/integrations/` (Auth-Header + Payload nach dokumentierten APIs,
+remote-id-Parsing) sind golden-getestet (`npm run test:integrations`);
+`planPush` (Dedup) rein & getestet. Lexoffice/sevDesk sind Buchhaltungs-/
+Rechnungssysteme OHNE Zeiteintrags-API — bewusst NICHT als Zeiteintrags-Push
+umgesetzt, sondern für einen späteren Rechnungs-Adapter zurückgestellt.
+Duplikatschutz: `integration_pushes` UNIQUE(entry_id,provider) + `planPush`
+überspringt bereits Gepushtes; erfolgreiche Pushes flippen den Eintrag auf
+`exported`. Privacy: es gehen AUSSCHLIESSLICH die vier Feldern des
+bestätigten Eintrags raus (Datum, gemapptes Projekt, gerundete Minuten,
+Narrativ) — nie Capture/Screenshots/OCR/Evidence/KI; opt-in, erst nach
+Verbinden UND Push. API-Keys liegen vorerst in der on-device Settings-DB
+(verlassen das Gerät nur als Auth-Header beim Push); Vault-Verschlüsselung
+ist ein dokumentierter macOS-Follow-up (Rust im Linux-Container nicht
+kompilierbar). Gating wie der Datei-Export (Entitlement); der DSGVO-Backup
+bleibt frei. Website: Integrations-Sektion ("Vera + Moco/awork/Clio"),
+Privacy-Copy präzisiert ("nichts verlässt automatisch — du steuerst jeden
+Export"). CLAUDE.md-Netzwerkregel entsprechend erweitert.
+
 **NACHWEIS/ABNAHME:** Ein Abrechnungsmonat wird von echten Beta-Nutzern
-produktiv in mindestens 2 Zielsysteme übergeben.
+produktiv in mindestens 2 Zielsysteme übergeben. (Der Live-Nachweis gegen
+echte APIs braucht echte Konten/Keys + macOS — im Container sind die reinen
+Adapter, das Dedup und das v10-Schema bewiesen; der `fetch`-Transport ist
+mock-getestet.)
 
 ### Schicht 8 — Windows-Port & Kanzlei-Edition (die Skalierungsstufe)
 

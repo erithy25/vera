@@ -5,3 +5,4 @@
 .reports-core.bundle.mjs
 .license-core.bundle.mjs
 .license-crypto.bundle.mjs
+.integrations.bundle.mjs

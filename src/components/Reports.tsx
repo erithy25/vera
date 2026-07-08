@@ -28,6 +28,7 @@ import {
 } from "../lib/reports-core";
 import { buildExportRows, exportAdapters } from "../lib/export";
 import { currentEntitlement } from "../lib/license";
+import { IntegrationsPushCard } from "./IntegrationsPushCard";
 import { entryDateOf } from "../lib/narrative-core";
 import { prevDayStart, formatDuration, formatEuroFromCents } from "../lib/format";
 
@@ -427,6 +428,9 @@ export const Reports: React.FC = () => {
           <span className="font-sans text-[12px] text-red-600">{exportState.message}</span>
         )}
       </div>
+
+      {/* Direct integrations — push straight into a connected billing tool */}
+      <IntegrationsPushCard fromDate={fromDate} toDate={toDate} />
 
       <span className="flex items-center gap-1.5 font-sans text-[12px] text-text-faint mt-2">
         <Lock size={12} strokeWidth={1.5} />
