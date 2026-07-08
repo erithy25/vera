@@ -19,12 +19,28 @@ import {
 } from "lucide-react";
 import {
   blocksRepo,
+  feedbackRepo,
   projectsRepo,
+  rulesRepo,
+  settingsRepo,
+  isActiveProject,
   BlockStatus,
   DbWorkBlock,
   DbProjectWithClient,
 } from "../lib/db";
 import { recomputeDay } from "../lib/blocks";
+import { assignmentEngineUnavailableReason, queueAssignment } from "../lib/assign";
+import { suggestRule, RuleSuggestion } from "../lib/assignment-core";
+
+const suggestionKey = (s: RuleSuggestion) =>
+  `${s.matcher_type}|${s.pattern}|${s.project_id}`;
+
+// A block whose assignment came from the engine (rule/LLM) and is still open
+// — exactly what the per-client "confirm all" chips act on.
+const isEngineSuggestion = (b: DbWorkBlock) =>
+  b.status === "open" &&
+  (b.assignment_source === "rule" || b.assignment_source === "llm") &&
+  b.project_id !== null;
 import {
   dayStartOf,
   nextDayStart,
@@ -33,6 +49,38 @@ import {
   formatTimeOfDay,
 } from "../lib/format";
 import { parseEvidenceJson, evidenceText } from "../lib/segmentation";
+
+// How a block got its project: user, rule, or the local model (with its
+// confidence). Rendered next to the project picker.
+const SourceBadge: React.FC<{ block: DbWorkBlock }> = ({ block }) => {
+  if (block.project_id === null || !block.assignment_source) return null;
+  const label =
+    block.assignment_source === "manual"
+      ? "Manual"
+      : block.assignment_source === "rule"
+        ? "Rule"
+        : `AI ${Math.round((block.confidence ?? 0) * 100)}%`;
+  return (
+    <span
+      title={
+        block.assignment_source === "manual"
+          ? "Assigned by you"
+          : block.assignment_source === "rule"
+            ? "Assigned by one of your rules"
+            : "Suggested by the local model — confirm or correct it"
+      }
+      className={`font-sans text-[10px] px-1.5 py-0.5 rounded border shrink-0 uppercase tracking-wide ${
+        block.assignment_source === "manual"
+          ? "border-border-hairline bg-active-hover text-text-muted"
+          : block.assignment_source === "rule"
+            ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-600"
+            : "border-sky-500/20 bg-sky-500/5 text-sky-700"
+      }`}
+    >
+      {label}
+    </span>
+  );
+};
 
 function AppIcon({ appSummary }: { appSummary: string | null }) {
   const name = (appSummary || "").toLowerCase();
@@ -57,6 +105,10 @@ export const DayView: React.FC = () => {
   const [splitting, setSplitting] = useState<{ id: number; time: string; error: string | null } | null>(null);
   const [showDiscarded, setShowDiscarded] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Learning loop: a one-click rule proposal after repeated matching corrections.
+  const [suggestion, setSuggestion] = useState<RuleSuggestion | null>(null);
+  // Why the local model is not assigning right now (Ollama offline / no model).
+  const [engineHint, setEngineHint] = useState<string | null>(null);
 
   const isToday = dayStart === dayStartOf(Date.now());
   // Recompute is only offered where raw capture is guaranteed fresh — the
@@ -84,6 +136,7 @@ export const DayView: React.FC = () => {
       setSelected((prev) => prev.filter((id) => ids.has(id)));
       setEvidenceOpen((prev) => (prev !== null && ids.has(prev) ? prev : null));
       setSplitting((prev) => (prev && ids.has(prev.id) ? prev : null));
+      setEngineHint(assignmentEngineUnavailableReason());
       setLoaded(true);
     } catch (err) {
       console.error("Failed to load day blocks:", err);
@@ -112,6 +165,31 @@ export const DayView: React.FC = () => {
 
   const active = blocks.filter((b) => b.status !== "discarded" && matchesSearch(b));
   const discarded = blocks.filter((b) => b.status === "discarded" && matchesSearch(b));
+
+  const clientOf = (b: DbWorkBlock): { id: number; name: string } | null => {
+    if (b.project_id === null) return null;
+    const p = projects.find((x) => x.id === b.project_id);
+    return p ? { id: p.client_id, name: p.client_name } : null;
+  };
+
+  // "Unassigned" first — that is where review attention belongs.
+  const unassigned = active.filter((b) => b.project_id === null);
+  const assigned = active.filter((b) => b.project_id !== null);
+
+  // Per-client bulk confirmation of engine suggestions, grouped by client ID
+  // (names are not unique — an archived and a re-created client may share one).
+  const confirmableClients = (() => {
+    const counts = new Map<number, { name: string; count: number }>();
+    for (const b of active) {
+      if (!isEngineSuggestion(b)) continue;
+      const client = clientOf(b);
+      if (!client) continue;
+      const entry = counts.get(client.id) ?? { name: client.name, count: 0 };
+      entry.count++;
+      counts.set(client.id, entry);
+    }
+    return [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
+  })();
 
   // Merging is only meaningful for a consecutive run of blocks — otherwise
   // the merged block would span (and double-count) unselected time between.
@@ -158,7 +236,64 @@ export const DayView: React.FC = () => {
   };
 
   const handleAssign = async (id: number, value: string) => {
-    await blocksRepo.assignProject(id, value === "" ? null : Number(value));
+    const projectId = value === "" ? null : Number(value);
+    const block = blocks.find((b) => b.id === id);
+    // A recompute may have replaced this row while the picker was open — the
+    // repo tells us whether the assignment actually landed; phantom
+    // corrections must never become feedback or rule-suggestion counts.
+    const applied = await blocksRepo.assignProject(id, projectId);
+    if (applied && projectId !== null && block) {
+      try {
+        await feedbackRepo.add(block.evidence || "{}", projectId);
+        const [feedback, rules, dismissed] = await Promise.all([
+          feedbackRepo.recent(),
+          rulesRepo.list(),
+          settingsRepo.getDismissedSuggestions(),
+        ]);
+        const s = suggestRule(feedback, rules, {
+          evidence: parseEvidenceJson(block.evidence),
+          project_id: projectId,
+        });
+        setSuggestion(s && !dismissed.includes(suggestionKey(s)) ? s : null);
+      } catch (err) {
+        console.error("Failed to record assignment feedback:", err);
+      }
+    }
+    await loadBlocks();
+  };
+
+  const acceptSuggestion = async () => {
+    if (!suggestion) return;
+    try {
+      await rulesRepo.add(suggestion.matcher_type, suggestion.pattern, suggestion.project_id, "suggestion");
+      setSuggestion(null);
+      // Assignment (not segmentation) applies the rule — this also works on
+      // days whose raw capture has already expired.
+      await queueAssignment(dayStart, nextDayStart(dayStart));
+      await loadBlocks();
+    } catch (err) {
+      console.error("Failed to create suggested rule:", err);
+    }
+  };
+
+  const dismissSuggestion = async () => {
+    if (!suggestion) return;
+    const key = suggestionKey(suggestion);
+    setSuggestion(null);
+    try {
+      await settingsRepo.addDismissedSuggestion(key); // never re-nag this combo
+    } catch (err) {
+      console.error("Failed to persist dismissed suggestion:", err);
+    }
+  };
+
+  const confirmAllForClient = async (clientId: number) => {
+    const targets = active.filter(
+      (b) => isEngineSuggestion(b) && clientOf(b)?.id === clientId
+    );
+    for (const b of targets) {
+      await blocksRepo.setStatus(b.id, "confirmed");
+    }
     await loadBlocks();
   };
 
@@ -197,7 +332,7 @@ export const DayView: React.FC = () => {
   // Picker options: every active project, plus the (archived) project a block
   // is currently assigned to — so archiving never masks an assignment.
   const optionsForBlock = (b: DbWorkBlock): DbProjectWithClient[] => {
-    const activeProjects = projects.filter((p) => !p.archived && !p.client_archived);
+    const activeProjects = projects.filter(isActiveProject);
     if (b.project_id !== null && !activeProjects.some((p) => p.id === b.project_id)) {
       const assigned = projects.find((p) => p.id === b.project_id);
       if (assigned) return [...activeProjects, assigned];
@@ -241,7 +376,8 @@ export const DayView: React.FC = () => {
             <span className="font-sans text-[11px] text-text-faint truncate">{b.app_summary}</span>
           </div>
 
-          {/* Project assignment */}
+          {/* Project assignment + how it was assigned */}
+          <SourceBadge block={b} />
           <select
             value={b.project_id ?? ""}
             onChange={(e) => handleAssign(b.id, e.target.value)}
@@ -450,6 +586,60 @@ export const DayView: React.FC = () => {
         )}
       </div>
 
+      {/* Rule suggestion (learning loop) */}
+      {suggestion && (
+        <div className="card-style px-4 py-3 flex items-center gap-3 border-emerald-500/30">
+          <span className="flex-1 font-sans text-[13px] text-text-primary">
+            Always assign <strong>{suggestion.pattern}</strong> to{" "}
+            <strong>
+              {(() => {
+                const p = projects.find((x) => x.id === suggestion.project_id);
+                return p ? projectLabel(p) : "this project";
+              })()}
+            </strong>
+            ? You corrected this {""}
+            {suggestion.matcher_type === "domain" ? "domain" : "app"} three times.
+          </span>
+          <button
+            onClick={acceptSuggestion}
+            className="px-3 py-1.5 rounded-lg bg-text-primary text-card-surface font-sans text-[12px] font-medium cursor-pointer"
+          >
+            Create rule
+          </button>
+          <button
+            onClick={dismissSuggestion}
+            className="px-2 py-1.5 rounded-lg font-sans text-[12px] text-text-muted hover:bg-active-hover cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Local model unavailable → blocks stay unassigned */}
+      {engineHint && unassigned.length > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/5 border border-amber-500/15 rounded-xl">
+          <span className="font-sans text-[12.5px] text-amber-800">
+            {engineHint} Until then, new blocks stay unassigned.
+          </span>
+        </div>
+      )}
+
+      {/* Per-client bulk confirmation of engine suggestions */}
+      {confirmableClients.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-sans text-[12px] text-text-faint">Confirm all suggestions:</span>
+          {confirmableClients.map(([clientId, entry]) => (
+            <button
+              key={clientId}
+              onClick={() => confirmAllForClient(clientId)}
+              className="px-2.5 py-1 rounded-lg border border-emerald-500/25 bg-emerald-500/5 font-sans text-[12px] text-emerald-700 hover:bg-emerald-500/10 transition-colors cursor-pointer"
+            >
+              {entry.name} ({entry.count})
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Blocks */}
       {loaded && active.length === 0 && (
         <div className="card-style px-8 py-14 flex flex-col items-center text-center gap-3">
@@ -478,7 +668,19 @@ export const DayView: React.FC = () => {
         </div>
       )}
 
-      <div className="flex flex-col gap-2">{active.map(renderBlock)}</div>
+      {/* Unassigned first — that's where review attention belongs */}
+      {unassigned.length > 0 && assigned.length > 0 && (
+        <span className="font-sans text-[11px] font-semibold text-text-faint tracking-widest uppercase">
+          Unassigned ({unassigned.length})
+        </span>
+      )}
+      <div className="flex flex-col gap-2">{unassigned.map(renderBlock)}</div>
+      {unassigned.length > 0 && assigned.length > 0 && (
+        <span className="font-sans text-[11px] font-semibold text-text-faint tracking-widest uppercase mt-2">
+          Assigned ({assigned.length})
+        </span>
+      )}
+      <div className="flex flex-col gap-2">{assigned.map(renderBlock)}</div>
 
       {/* Discarded */}
       {discarded.length > 0 && (

@@ -77,61 +77,35 @@ export const ollamaClient = {
     }
   },
 
-  async chatStream(
+  // One-shot chat completion in JSON mode (Ollama constrains the output to
+  // valid JSON). Non-streaming — used by the assignment engine. The timeout
+  // (generous, to allow a cold model load) guarantees a hung Ollama can never
+  // wedge the engine queue forever; the caller stops the pass on TimeoutError.
+  async chatJson(
     model: string,
-    messages: Array<{ role: string; content: string }>,
-    onChunk: (chunk: string) => void
+    messages: Array<{ role: string; content: string }>
   ): Promise<string> {
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
         model,
         messages,
-        stream: true,
-        options: {
-          temperature: 0.2,
-        }
+        stream: false,
+        format: "json",
+        options: { temperature: 0 },
       }),
     });
-
     if (!res.ok) {
       const errorText = await res.text();
-      throw new Error(`Chat stream request failed: ${res.statusText} - ${errorText}`);
+      throw new Error(`Chat request failed: ${res.statusText} - ${errorText}`);
     }
-
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error("ReadableStream not supported on response");
+    const json = await res.json();
+    const content = json.message?.content;
+    if (typeof content !== "string" || !content.trim()) {
+      throw new Error("Ollama returned an empty response");
     }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let fullResponse = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const json = JSON.parse(line);
-          if (json.message?.content) {
-            const chunk = json.message.content;
-            fullResponse += chunk;
-            onChunk(chunk);
-          }
-        } catch (e) {
-          console.error("Failed to parse chat progress line:", line, e);
-        }
-      }
-    }
-
-    return fullResponse;
+    return content;
   },
 };

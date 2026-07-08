@@ -1,26 +1,46 @@
 import { ollamaClient } from "./ollama";
 import { settingsRepo } from "./db";
 
-// Local-only generation path (Ollama). This is the substrate for the
-// assignment engine and the narrative generator of the coming layers — Vera
-// has no cloud engine: not a single byte leaves the device.
-// Throws an Error with a user-displayable message on failure.
-export async function generateReply(
-  messages: { role: string; content: string }[],
-  onChunk: (chunk: string) => void
-): Promise<void> {
+// Local-only generation (Ollama, JSON mode). Vera has no cloud engine: not a
+// single byte leaves the device.
+
+export class EngineUnavailableError extends Error {}
+
+/**
+ * Resolve the local model once per assignment pass (offline / model-missing
+ * checks). Throws EngineUnavailableError with a user-displayable message.
+ */
+export async function prepareEngine(): Promise<string> {
   const online = await ollamaClient.isRunning();
   if (!online) {
-    throw new Error(
-      "Ollama is offline. Please make sure Ollama is running locally so Vera can generate text."
+    throw new EngineUnavailableError(
+      "Ollama is offline. Start Ollama so Vera can assign blocks locally."
     );
   }
-  const chatModel = await settingsRepo.getChatModel();
+  const model = await settingsRepo.getChatModel();
   const installed = await ollamaClient.listModels();
-  if (!installed.includes(chatModel) && !installed.includes(`${chatModel}:latest`)) {
-    throw new Error(
-      `Model '${chatModel}' is not downloaded. Go to Settings to download it, or run \`ollama pull ${chatModel}\` in your terminal.`
+  if (!installed.includes(model) && !installed.includes(`${model}:latest`)) {
+    throw new EngineUnavailableError(
+      `Model '${model}' is not downloaded. Pull it in Settings → Local AI.`
     );
   }
-  await ollamaClient.chatStream(chatModel, messages, onChunk);
+  return model;
+}
+
+/**
+ * One JSON-mode completion. Malformed-but-returned JSON is the CALLER's
+ * concern (parseClassifyReply); this retry only covers transport blips —
+ * same prompt, one attempt. A TimeoutError (hung Ollama) propagates so the
+ * caller can stop the whole pass instead of timing out 25 times.
+ */
+export async function generateJson(
+  model: string,
+  messages: { role: string; content: string }[]
+): Promise<string> {
+  try {
+    return await ollamaClient.chatJson(model, messages);
+  } catch (err: any) {
+    if (err?.name === "TimeoutError") throw err;
+    return await ollamaClient.chatJson(model, messages);
+  }
 }

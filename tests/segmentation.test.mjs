@@ -11,6 +11,7 @@ import {
   mergeEvidence,
   evidenceText,
   EVIDENCE_CAPS,
+  pairByOverlap,
 } from "./.segmentation.bundle.mjs";
 import assert from "node:assert";
 
@@ -216,6 +217,31 @@ check("evidenceText joins values (not JSON keys) for search", () => {
   const t = evidenceText({ apps: ["Figma"], titles: ["Homepage"], domains: ["x.com"], terms: ["draft"] });
   assert.ok(t.includes("figma") && t.includes("x.com"));
   assert.ok(!t.includes("apps") && !t.includes("titles"));
+});
+
+check("pairByOverlap: substantial overlap pairs, shifts keep identity, disjoint don't", () => {
+  const A = (s, e, tag) => ({ startedAt: s, endedAt: e, tag });
+  // existing block 100-200 vs computed 110-210 (overlap 90 of 100) → pair
+  const r1 = pairByOverlap([A(100, 200, "e1")], [A(110, 210, "c1")]);
+  assert.equal(r1.pairs.length, 1);
+  assert.equal(r1.pairs[0].existing.tag, "e1");
+  assert.equal(r1.pairs[0].computed.tag, "c1");
+  // tiny overlap (30% of shorter) → no pair
+  const r2 = pairByOverlap([A(100, 200, "e1")], [A(170, 400, "c1")]);
+  assert.equal(r2.pairs.length, 0);
+  assert.equal(r2.unmatchedExisting.length, 1);
+  assert.equal(r2.unmatchedComputed.length, 1);
+});
+
+check("pairByOverlap is 1:1 greedy by largest overlap", () => {
+  const A = (s, e, tag) => ({ startedAt: s, endedAt: e, tag });
+  // one existing spans two computed; it must pair with the bigger overlap only
+  const existing = [A(0, 100, "e1")];
+  const computed = [A(0, 40, "c-small"), A(40, 100, "c-big")];
+  const r = pairByOverlap(existing, computed);
+  assert.equal(r.pairs.length, 1);
+  assert.equal(r.pairs[0].computed.tag, "c-big");
+  assert.deepStrictEqual(r.unmatchedComputed.map((x) => x.tag), ["c-small"]);
 });
 
 console.log();

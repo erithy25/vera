@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import { mergeEvidence, parseEvidenceJson } from "./segmentation";
+import { mergeEvidence, pairByOverlap, parseEvidenceJson } from "./segmentation";
 
 let dbInstance: Database | null = null;
 
@@ -309,6 +309,16 @@ const engineOwned = (prefix = "") =>
   `(${prefix}status = 'open' AND ${prefix}user_edited = 0)`;
 const ENGINE_OWNED = engineOwned();
 
+// Write-time check that a project (given as a bound placeholder) is active.
+const PROJECT_ACTIVE = (placeholder: string) =>
+  `EXISTS (SELECT 1 FROM projects pr JOIN clients cl ON cl.id = pr.client_id
+           WHERE pr.id = ${placeholder} AND pr.archived = 0 AND cl.archived = 0)`;
+
+/** Assignable = neither the project nor its client is archived. */
+export function isActiveProject(p: DbProjectWithClient): boolean {
+  return p.archived === 0 && p.client_archived === 0;
+}
+
 export const blocksRepo = {
   // All blocks whose start lies within [startMs, endMs), chronological.
   async forDay(startMs: number, endMs: number): Promise<DbWorkBlock[]> {
@@ -329,13 +339,15 @@ export const blocksRepo = {
     );
   },
 
-  // Idempotent recompute: replace the engine-owned (open, untouched) blocks
-  // of the day with a fresh computation. Preserved blocks stay as they are.
-  // A final repair pass removes any engine-owned block that overlaps a
-  // preserved one — this makes a user edit racing the recompute (confirm
-  // landing between the preserved snapshot and this write) self-healing
-  // instead of double-counting the time.
-  async replaceComputedForDay(
+  // Idempotent, RECONCILING recompute: a computed block that substantially
+  // overlaps an existing engine-owned block updates it in place (stable id,
+  // assignment/source/confidence survive — required since the assignment
+  // engine writes onto open blocks); unmatched old blocks are deleted,
+  // unmatched new ones inserted. Preserved (confirmed/user-edited) blocks are
+  // never touched. A final repair pass removes any engine-owned block that
+  // overlaps a preserved one — this makes a user edit racing the recompute
+  // self-healing instead of double-counting the time.
+  async reconcileComputedForDay(
     startMs: number,
     endMs: number,
     blocks: {
@@ -347,15 +359,60 @@ export const blocksRepo = {
     }[]
   ): Promise<void> {
     const db = await getDb();
-    await db.execute(
-      `DELETE FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND ${ENGINE_OWNED}`,
-      [startMs, endMs]
+    const existing = await blocksRepo.engineOwnedForDay(startMs, endMs);
+    const { pairs, unmatchedExisting, unmatchedComputed } = pairByOverlap(
+      existing.map((e) => ({ startedAt: e.started_at, endedAt: e.ended_at, row: e })),
+      blocks.map((b) => ({ startedAt: b.started_at, endedAt: b.ended_at, block: b }))
     );
+
+    // Phase order matters for crash safety: deleting stale rows FIRST means a
+    // crash mid-reconcile can only undercount (self-healing on the next run),
+    // never leave overlapping duplicates. Every write re-checks ENGINE_OWNED
+    // so a block the user confirms/edits between the snapshot and the write
+    // is never touched (same convention as assignAuto).
+    if (unmatchedExisting.length > 0) {
+      const ids = unmatchedExisting.map((e) => e.row.id);
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ");
+      await db.execute(
+        `DELETE FROM work_blocks WHERE id IN (${placeholders}) AND ${ENGINE_OWNED}`,
+        ids
+      );
+    }
+
+    for (const { existing: e, computed: c } of pairs) {
+      const b = c.block;
+      const identical =
+        e.row.started_at === b.started_at &&
+        e.row.ended_at === b.ended_at &&
+        e.row.app_summary === b.app_summary &&
+        e.row.title_summary === b.title_summary &&
+        e.row.evidence === b.evidence;
+      if (identical) continue; // settled block — skip the pointless rewrite
+
+      // An LLM verdict is only as good as the evidence it judged. When the
+      // paired block's duration changes substantially (an in-progress block
+      // growing, or absorption reshuffles), an 'llm' assignment is cleared so
+      // the next assignment pass re-classifies with the fresh evidence.
+      // 'manual' can't occur here (user_edited=1 is not engine-owned) and
+      // 'rule' re-applies deterministically anyway.
+      const oldDur = e.row.ended_at - e.row.started_at;
+      const newDur = b.ended_at - b.started_at;
+      const materialChange = newDur > oldDur * 1.33 || newDur < oldDur * 0.67;
+      const dropLlmVerdict = materialChange && e.row.assignment_source === "llm";
+      await db.execute(
+        `UPDATE work_blocks SET started_at = $1, ended_at = $2, app_summary = $3, title_summary = $4, evidence = $5
+         ${dropLlmVerdict ? ", project_id = NULL, assignment_source = NULL, confidence = NULL" : ""}
+         WHERE id = $6 AND ${ENGINE_OWNED}`,
+        [b.started_at, b.ended_at, b.app_summary, b.title_summary, b.evidence, e.row.id]
+      );
+    }
+
     // Batched multi-row inserts: one statement per chunk instead of one IPC
     // round trip + fsync per block.
     const CHUNK = 40;
-    for (let i = 0; i < blocks.length; i += CHUNK) {
-      const chunk = blocks.slice(i, i + CHUNK);
+    const inserts = unmatchedComputed.map((c) => c.block);
+    for (let i = 0; i < inserts.length; i += CHUNK) {
+      const chunk = inserts.slice(i, i + CHUNK);
       const values: string[] = [];
       const params: any[] = [];
       let p = 1;
@@ -368,6 +425,7 @@ export const blocksRepo = {
         params
       );
     }
+
     await db.execute(
       `DELETE FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND ${ENGINE_OWNED}
        AND EXISTS (
@@ -380,17 +438,73 @@ export const blocksRepo = {
     );
   },
 
+  // Engine-side assignment write (rules / local LLM). Unlike assignProject
+  // (a manual user action), this keeps user_edited = 0 — the block stays
+  // engine-owned and its assignment survives recomputes via reconciliation.
+  // The EXISTS guard re-checks at write time that the target project is
+  // still active (it may have been archived during a minutes-long LLM pass).
+  async assignAuto(
+    id: number,
+    projectId: number,
+    source: "rule" | "llm",
+    confidence: number
+  ): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      `UPDATE work_blocks SET project_id = $1, assignment_source = $2, confidence = $3
+       WHERE id = $4 AND ${ENGINE_OWNED} AND ${PROJECT_ACTIVE("$1")}`,
+      [projectId, source, confidence, id]
+    );
+  },
+
+  // Batched variant for the deterministic rules pass (one statement per
+  // project instead of one per block).
+  async assignAutoBatch(ids: number[], projectId: number, source: "rule" | "llm", confidence: number): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const placeholders = ids.map((_, i) => `$${i + 4}`).join(", ");
+    await db.execute(
+      `UPDATE work_blocks SET project_id = $1, assignment_source = $2, confidence = $3
+       WHERE id IN (${placeholders}) AND ${ENGINE_OWNED} AND ${PROJECT_ACTIVE("$1")}`,
+      [projectId, source, confidence, ...ids]
+    );
+  },
+
+  // Remember a below-threshold / unparseable LLM verdict so the identical
+  // block is not re-sent to the model on every run (temperature 0 would
+  // reproduce the same rejection forever). Reconciliation clears the marker
+  // when the block's evidence changes materially.
+  async markLlmAttempt(id: number, confidence: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      `UPDATE work_blocks SET project_id = NULL, assignment_source = 'llm', confidence = $1 WHERE id = $2 AND ${ENGINE_OWNED}`,
+      [confidence, id]
+    );
+  },
+
+  // Open engine-owned blocks of a day — the assignment engine's work list.
+  async engineOwnedForDay(startMs: number, endMs: number): Promise<DbWorkBlock[]> {
+    const db = await getDb();
+    return db.select<DbWorkBlock[]>(
+      `SELECT * FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND ${ENGINE_OWNED} ORDER BY started_at ASC`,
+      [startMs, endMs]
+    );
+  },
+
   async setStatus(id: number, status: BlockStatus): Promise<void> {
     const db = await getDb();
     await db.execute("UPDATE work_blocks SET status = $1 WHERE id = $2", [status, id]);
   },
 
-  async assignProject(id: number, projectId: number | null): Promise<void> {
+  // Returns false when the row no longer exists (e.g. replaced by a recompute
+  // while the picker was open) — callers must not record feedback then.
+  async assignProject(id: number, projectId: number | null): Promise<boolean> {
     const db = await getDb();
-    await db.execute(
+    const result = await db.execute(
       "UPDATE work_blocks SET project_id = $1, assignment_source = $2, confidence = NULL, user_edited = 1 WHERE id = $3",
       [projectId, projectId === null ? null : "manual", id]
     );
+    return (result.rowsAffected ?? 0) > 0;
   },
 
   // Merge several blocks into one spanning block (user action). Evidence
@@ -439,6 +553,74 @@ export const blocksRepo = {
     await db.execute(
       "INSERT INTO work_blocks (started_at, ended_at, app_summary, title_summary, evidence, project_id, assignment_source, confidence, status, user_edited) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)",
       [atMs, b.ended_at, b.app_summary, b.title_summary, b.evidence, b.project_id, b.assignment_source, b.confidence, b.status]
+    );
+  },
+};
+
+// --- Assignment rules & learning-loop feedback ---
+
+// The matcher taxonomy is owned by the pure assignment module.
+export type { RuleMatcherType } from "./assignment-core";
+import type { RuleMatcherType } from "./assignment-core";
+
+export interface DbAssignmentRule {
+  id: number;
+  matcher_type: RuleMatcherType;
+  pattern: string;
+  project_id: number;
+  created_from: string | null; // 'user' | 'suggestion'
+  created_at: number;
+}
+
+export interface DbAssignmentFeedback {
+  id: number;
+  block_evidence: string; // JSON snapshot of the corrected block's evidence
+  correct_project_id: number;
+  created_at: number;
+}
+
+export const rulesRepo = {
+  async list(): Promise<DbAssignmentRule[]> {
+    const db = await getDb();
+    return db.select<DbAssignmentRule[]>(
+      "SELECT * FROM assignment_rules ORDER BY created_at DESC"
+    );
+  },
+
+  async add(
+    matcherType: RuleMatcherType,
+    pattern: string,
+    projectId: number,
+    createdFrom: "user" | "suggestion"
+  ): Promise<number> {
+    const db = await getDb();
+    const result = await db.execute(
+      "INSERT INTO assignment_rules (matcher_type, pattern, project_id, created_from, created_at) VALUES ($1, $2, $3, $4, $5)",
+      [matcherType, pattern, projectId, createdFrom, Date.now()]
+    );
+    return result.lastInsertId!;
+  },
+
+  async remove(id: number): Promise<void> {
+    const db = await getDb();
+    await db.execute("DELETE FROM assignment_rules WHERE id = $1", [id]);
+  },
+};
+
+export const feedbackRepo = {
+  async add(blockEvidence: string, correctProjectId: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT INTO assignment_feedback (block_evidence, correct_project_id, created_at) VALUES ($1, $2, $3)",
+      [blockEvidence, correctProjectId, Date.now()]
+    );
+  },
+
+  async recent(limit = 50): Promise<DbAssignmentFeedback[]> {
+    const db = await getDb();
+    return db.select<DbAssignmentFeedback[]>(
+      "SELECT * FROM assignment_feedback ORDER BY created_at DESC LIMIT $1",
+      [limit]
     );
   },
 };
@@ -607,6 +789,34 @@ export const settingsRepo = {
     await db.execute(
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_complete', $1)",
       [complete ? "true" : "false"]
+    );
+  },
+
+  // Rule suggestions the user dismissed — never re-nag for the same
+  // domain/app→project combination.
+  async getDismissedSuggestions(): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'dismissed_rule_suggestions'"
+    );
+    if (rows.length > 0) {
+      try {
+        const parsed = JSON.parse(rows[0].value);
+        if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === "string");
+      } catch {
+        // fall through to empty
+      }
+    }
+    return [];
+  },
+
+  async addDismissedSuggestion(key: string): Promise<void> {
+    const db = await getDb();
+    const current = await settingsRepo.getDismissedSuggestions();
+    if (current.includes(key)) return;
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('dismissed_rule_suggestions', $1)",
+      [JSON.stringify([...current, key].slice(-100))]
     );
   },
 

@@ -1,4 +1,5 @@
 import { activityRepo, blocksRepo, framesRepo, isSystemProcessName, settingsRepo } from "./db";
+import { queueAssignment } from "./assign";
 import { dayStartOf, nextDayStart, prevDayStart } from "./format";
 import { Moment, segmentDay, subtractPreserved } from "./segmentation";
 
@@ -63,7 +64,7 @@ async function runForDayInner(dayStartMs: number): Promise<void> {
     segmentDay(moments, dayStartMs, dayEndMs),
     preserved.map((p) => ({ startedAt: p.started_at, endedAt: p.ended_at }))
   );
-  await blocksRepo.replaceComputedForDay(
+  await blocksRepo.reconcileComputedForDay(
     dayStartMs,
     dayEndMs,
     computed.map((b) => ({
@@ -74,14 +75,28 @@ async function runForDayInner(dayStartMs: number): Promise<void> {
       evidence: JSON.stringify(b.evidence),
     }))
   );
+  // Fresh structure renders immediately; the assignment engine runs on its
+  // OWN queue (fire-and-forget here) so a minutes-long LLM pass never blocks
+  // recomputes or the UI — it dispatches its own blocks-updated when done.
   window.dispatchEvent(new CustomEvent("blocks-updated"));
+  queueAssignment(dayStartMs, dayEndMs).catch((err) =>
+    console.error("[Vera Blocks] assignment run failed:", err)
+  );
 }
 
 // One queue for every recompute — interval ticks and manual refreshes alike.
+// Coalesced per day so a slow run can never build an unbounded backlog of
+// identical recomputes behind itself.
 let queue: Promise<void> = Promise.resolve();
+const pendingDays = new Set<number>();
 
-function enqueue(work: () => Promise<void>): Promise<void> {
-  const next = queue.then(work);
+function enqueue(dayStartMs: number, work: () => Promise<void>): Promise<void> {
+  if (pendingDays.has(dayStartMs)) return queue;
+  pendingDays.add(dayStartMs);
+  const next = queue.then(() => {
+    pendingDays.delete(dayStartMs); // re-queues during the run are allowed
+    return work();
+  });
   // The queue itself must survive a failed run; callers still see the error.
   queue = next.catch((err) => {
     console.error("[Vera Blocks] engine run failed:", err);
@@ -91,7 +106,7 @@ function enqueue(work: () => Promise<void>): Promise<void> {
 
 /** Recompute one day (serialized with all other engine runs). */
 export function recomputeDay(dayStartMs: number): Promise<void> {
-  return enqueue(() => runForDayInner(dayStartMs));
+  return enqueue(dayStartMs, () => runForDayInner(dayStartMs));
 }
 
 // Days from the persisted watermark (exclusive of already-final days) up to
@@ -113,7 +128,8 @@ async function daysToProcess(): Promise<number[]> {
   for (let d = from; d <= today; d = nextDayStart(d)) {
     days.push(d);
   }
-  return days;
+  // Newest first: today is usable immediately; older days backfill behind it.
+  return days.reverse();
 }
 
 let lastTickToday: number | null = null;

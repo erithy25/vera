@@ -425,6 +425,47 @@ export interface Interval {
 }
 
 /**
+ * Greedy 1:1 pairing of two block lists by time overlap — the heart of the
+ * reconciling recompute: a freshly computed block that substantially overlaps
+ * an existing engine-owned block is treated as the SAME block (updated in
+ * place, keeping its id and assignment) instead of delete+reinsert. A pair
+ * requires the overlap to cover at least `minShare` of the shorter interval.
+ */
+export function pairByOverlap<A extends Interval, B extends Interval>(
+  existing: A[],
+  computed: B[],
+  minShare = 0.5
+): { pairs: Array<{ existing: A; computed: B }>; unmatchedExisting: A[]; unmatchedComputed: B[] } {
+  const candidates: Array<{ overlap: number; e: number; c: number }> = [];
+  for (let e = 0; e < existing.length; e++) {
+    for (let c = 0; c < computed.length; c++) {
+      const a = existing[e];
+      const b = computed[c];
+      const overlap = Math.min(a.endedAt, b.endedAt) - Math.max(a.startedAt, b.startedAt);
+      if (overlap <= 0) continue;
+      const shorter = Math.min(a.endedAt - a.startedAt, b.endedAt - b.startedAt);
+      if (shorter <= 0 || overlap < minShare * shorter) continue;
+      candidates.push({ overlap, e, c });
+    }
+  }
+  candidates.sort((x, y) => y.overlap - x.overlap);
+  const usedE = new Set<number>();
+  const usedC = new Set<number>();
+  const pairs: Array<{ existing: A; computed: B }> = [];
+  for (const cand of candidates) {
+    if (usedE.has(cand.e) || usedC.has(cand.c)) continue;
+    usedE.add(cand.e);
+    usedC.add(cand.c);
+    pairs.push({ existing: existing[cand.e], computed: computed[cand.c] });
+  }
+  return {
+    pairs,
+    unmatchedExisting: existing.filter((_, i) => !usedE.has(i)),
+    unmatchedComputed: computed.filter((_, i) => !usedC.has(i)),
+  };
+}
+
+/**
  * Subtract preserved (user-edited/confirmed) block intervals from freshly
  * computed blocks, so a recompute never double-counts time the user already
  * owns. A computed block overlapping a preserved one is trimmed or split;

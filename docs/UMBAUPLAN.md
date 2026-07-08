@@ -332,14 +332,23 @@ Kunden-/Projektstruktur — noch ohne KI-Zuordnung.
   gruppiert wird (`src/lib/segmentation.ts`, pur und replika-getestet;
   Test eingecheckt: `npm run test:segmentation`).
 - Umsetzungsnotizen aus dem Schicht-2-Review für Schicht 3:
-  (1) `replaceComputedForDay` ist DELETE+INSERT — sobald Schicht 3
-  rule/llm-Zuweisungen auf offene Blöcke schreibt, muss der Recompute auf
-  abgleichende UPDATEs umgestellt werden, sonst löscht jeder 15-min-Lauf
-  die Zuweisungen. (2) Erwägen, die Browser-URL bereits in Rust auf
-  `activity_events` zu persistieren (Frames sind der verfallende Datenstrom,
-  Events der dauerhafte) — dann degradiert ein Recompute alter Tage nicht.
-  (3) OCR-Tokenisierung ggf. memoisieren, wenn die Klassifikation die
-  Frame-Texte erneut liest.
+  (1) ERLEDIGT in Schicht 3: Der Recompute ist auf abgleichende UPDATEs
+  umgestellt (`reconcileComputedForDay` mit pairByOverlap, Write-Time-
+  Guards, Dirty-Skip und LLM-Verdikt-Invalidierung bei >33 %
+  Daueränderung) — Zuweisungen überleben Recomputes. (2) Weiterhin offen
+  (Kandidat Schicht 4+): Browser-URL bereits in Rust auf `activity_events`
+  persistieren (Frames verfallen, Events bleiben). (3) Weiterhin offen:
+  OCR-Tokenisierung memoisieren, falls eine spätere Schicht Frame-Texte
+  erneut liest.
+- Umsetzungsnotizen Schicht 3: Zuordnung läuft auf einer EIGENEN
+  serialisierten Queue (LLM-Pässe blockieren nie Segmentierung/Refresh),
+  mit Per-Tag-Koaleszenz, 120-s-Timeout gegen hängende Ollama-Requests,
+  Attempt-Gedächtnis (unter-Schwelle-Verdikte werden nicht endlos
+  wiederholt; Invalidierung bei materieller Evidence-Änderung), Backfill
+  neueste Tage zuerst, kapierte Pässe loopen bis der Tag fertig ist.
+  Regel-Vorschlags-Dismissals sind persistent. Bekannt & akzeptiert: Der
+  "AI offline"-Hinweis aktualisiert sich erst mit dem nächsten
+  Assignment-Lauf (kein eigener Status-Event-Kanal).
 
 **NACHWEIS/ABNAHME:** Segmentierung als Standalone-Replika-Test mit
 synthetischen activity/frames-Fixtures bewiesen (Grenzfälle: Idle, schnelle

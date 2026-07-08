@@ -1,12 +1,29 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Archive, ArchiveRestore, Pencil, Check, X } from "lucide-react";
+import { Plus, Archive, ArchiveRestore, Pencil, Check, X, Trash2, Wand2 } from "lucide-react";
 import {
   clientsRepo,
   projectsRepo,
+  rulesRepo,
+  DbAssignmentRule,
   DbClient,
   DbProjectWithClient,
+  RuleMatcherType,
 } from "../lib/db";
-import { formatEuroFromCents, parseEuroToCents } from "../lib/format";
+import { queueAssignment } from "../lib/assign";
+import {
+  dayStartOf,
+  nextDayStart,
+  prevDayStart,
+  formatEuroFromCents,
+  parseEuroToCents,
+} from "../lib/format";
+
+const MATCHER_LABELS: Record<RuleMatcherType, string> = {
+  domain: "Domain",
+  app: "App",
+  title_keyword: "Title contains",
+  path: "Path contains",
+};
 
 const PALETTE = ["#8A8A82", "#B0785C", "#7C8C6E", "#6E7C8C", "#9C7C8C", "#B09A5C"];
 
@@ -16,7 +33,13 @@ const PALETTE = ["#8A8A82", "#B0785C", "#7C8C6E", "#6E7C8C", "#9C7C8C", "#B09A5C
 export const ClientsProjects: React.FC = () => {
   const [clients, setClients] = useState<DbClient[]>([]);
   const [projects, setProjects] = useState<DbProjectWithClient[]>([]);
+  const [rules, setRules] = useState<DbAssignmentRule[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+
+  // Add-rule form
+  const [newRuleType, setNewRuleType] = useState<RuleMatcherType>("domain");
+  const [newRulePattern, setNewRulePattern] = useState("");
+  const [newRuleProject, setNewRuleProject] = useState<string>("");
 
   // Add-client form
   const [newClientName, setNewClientName] = useState("");
@@ -36,15 +59,33 @@ export const ClientsProjects: React.FC = () => {
 
   const load = async () => {
     try {
-      const [c, p] = await Promise.all([
+      const [c, p, r] = await Promise.all([
         clientsRepo.list(true),
         projectsRepo.listWithClients(true),
+        rulesRepo.list(),
       ]);
       setClients(c);
       setProjects(p);
+      setRules(r);
     } catch (err) {
       console.error("Failed to load clients/projects:", err);
     }
+  };
+
+  const handleAddRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const pattern = newRulePattern.trim().toLowerCase();
+    const projectId = newRuleProject === "" ? null : Number(newRuleProject);
+    if (!pattern || projectId === null) return;
+    await rulesRepo.add(newRuleType, pattern, projectId, "user");
+    setNewRulePattern("");
+    // The card promises immediate effect: run the assignment engine for
+    // today and yesterday right away (rules also apply on days whose raw
+    // capture already expired — assignment works from blocks).
+    const today = dayStartOf(Date.now());
+    queueAssignment(prevDayStart(today), today).catch(() => undefined);
+    queueAssignment(today, nextDayStart(today)).catch(() => undefined);
+    await load();
   };
 
   useEffect(() => {
@@ -302,6 +343,101 @@ export const ClientsProjects: React.FC = () => {
           </div>
         );
       })}
+
+      {/* Assignment rules — deterministic auto-assignment, confidence 100% */}
+      <div className="card-style p-5 flex flex-col gap-4">
+        <div className="flex items-center gap-2">
+          <Wand2 size={16} strokeWidth={1.5} className="text-text-muted" />
+          <div className="flex flex-col">
+            <span className="font-serif text-[19px] text-text-primary">Assignment rules</span>
+            <span className="font-sans text-[12px] text-text-faint">
+              Blocks matching a rule are assigned automatically — before the local model is even asked.
+            </span>
+          </div>
+        </div>
+
+        <form onSubmit={handleAddRule} className="flex flex-wrap items-center gap-2">
+          <select
+            value={newRuleType}
+            onChange={(e) => setNewRuleType(e.target.value as RuleMatcherType)}
+            className="px-2.5 py-2 border border-border-hairline rounded-xl font-sans text-[13px] bg-bg-warm outline-none cursor-pointer"
+          >
+            {(Object.keys(MATCHER_LABELS) as RuleMatcherType[]).map((t) => (
+              <option key={t} value={t}>
+                {MATCHER_LABELS[t]}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={newRulePattern}
+            onChange={(e) => setNewRulePattern(e.target.value)}
+            placeholder={newRuleType === "domain" ? "client-site.com" : newRuleType === "app" ? "Figma" : "keyword…"}
+            className="flex-1 min-w-[160px] px-3 py-2 bg-bg-warm border border-border-hairline rounded-xl font-sans text-[13px] outline-none placeholder:text-text-faint"
+          />
+          <span className="font-sans text-[13px] text-text-faint">→</span>
+          <select
+            value={newRuleProject}
+            onChange={(e) => setNewRuleProject(e.target.value)}
+            className="px-2.5 py-2 border border-border-hairline rounded-xl font-sans text-[13px] bg-bg-warm outline-none cursor-pointer max-w-[240px]"
+          >
+            <option value="">Choose project…</option>
+            {projects
+              .filter((p) => !p.archived && !p.client_archived)
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.client_name} — {p.name}
+                </option>
+              ))}
+          </select>
+          <button
+            type="submit"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-text-primary text-card-surface font-sans text-[13px] font-medium cursor-pointer active:scale-[0.98]"
+          >
+            <Plus size={14} strokeWidth={2} />
+            Add rule
+          </button>
+        </form>
+
+        <div className="flex flex-col gap-1.5">
+          {rules.map((r) => {
+            const project = projects.find((p) => p.id === r.project_id);
+            return (
+              <div key={r.id} className="flex items-center gap-3 py-1">
+                <span className="font-sans text-[11px] px-1.5 py-0.5 rounded bg-active-hover text-text-muted border border-border-hairline uppercase tracking-wide shrink-0">
+                  {MATCHER_LABELS[r.matcher_type] ?? r.matcher_type}
+                </span>
+                <span className="font-sans text-[13px] text-text-primary font-medium">{r.pattern}</span>
+                <span className="font-sans text-[12px] text-text-faint">→</span>
+                <span className="font-sans text-[13px] text-text-muted truncate">
+                  {project ? `${project.client_name} — ${project.name}` : `project #${r.project_id}`}
+                </span>
+                {r.created_from === "suggestion" && (
+                  <span className="font-sans text-[10px] px-1.5 py-0.5 rounded border border-sky-500/20 bg-sky-500/5 text-sky-700 uppercase tracking-wide shrink-0">
+                    learned
+                  </span>
+                )}
+                <div className="flex-1" />
+                <button
+                  onClick={async () => {
+                    await rulesRepo.remove(r.id);
+                    await load();
+                  }}
+                  title="Delete rule"
+                  className="p-1 rounded-lg text-text-faint hover:bg-red-500/5 hover:text-red-600 transition-colors cursor-pointer"
+                >
+                  <Trash2 size={13} strokeWidth={1.5} />
+                </button>
+              </div>
+            );
+          })}
+          {rules.length === 0 && (
+            <span className="font-sans text-[12px] text-text-faint italic py-1">
+              No rules yet. Correct a block's project three times and Vera will suggest one — or add one above.
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

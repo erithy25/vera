@@ -1826,6 +1826,30 @@ pub fn run() {
         CREATE INDEX IF NOT EXISTS idx_blocks_day ON work_blocks(started_at);
       ",
       kind: MigrationKind::Up,
+    },
+    // v8 — the assignment engine: deterministic rules plus the learning loop
+    // (every manual correction is stored as feedback and becomes few-shot
+    // context for the local LLM; three matching corrections suggest a rule).
+    Migration {
+      version: 8,
+      description: "create_assignment_tables",
+      sql: "
+        CREATE TABLE IF NOT EXISTS assignment_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          matcher_type TEXT NOT NULL,
+          pattern TEXT NOT NULL,
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          created_from TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assignment_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          block_evidence TEXT NOT NULL,
+          correct_project_id INTEGER NOT NULL REFERENCES projects(id),
+          created_at INTEGER NOT NULL
+        );
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 
