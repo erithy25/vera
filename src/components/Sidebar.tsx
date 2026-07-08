@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Clock, Settings, ChevronsUpDown } from "lucide-react";
+import { Clock, Settings, Briefcase, ChevronsUpDown } from "lucide-react";
 import { navItems } from "../lib/config";
 import { useUserProfile } from "../lib/useUserProfile";
 import { ProfileMenu } from "./ProfileMenu";
@@ -19,6 +19,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView })
     switch (iconName) {
       case "Settings":
         return <Settings size={18} strokeWidth={1.5} />;
+      case "Briefcase":
+        return <Briefcase size={18} strokeWidth={1.5} />;
       default:
         return <Clock size={18} strokeWidth={1.5} />;
     }

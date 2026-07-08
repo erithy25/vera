@@ -5,6 +5,7 @@ import { Plus, X, Shield, ShieldAlert, RotateCcw } from "lucide-react";
 import { activityRepo, settingsRepo } from "../lib/db";
 import { ollamaClient } from "../lib/ollama";
 import { consumeSettingsSection } from "../lib/settingsNav";
+import { domainOf } from "../lib/segmentation";
 
 const errorToMessage = (err: any): string =>
   typeof err === "string" ? err : err?.message || String(err);
@@ -408,24 +409,9 @@ export const Settings: React.FC = () => {
 
   const handleAddDomain = async (e: React.FormEvent) => {
     e.preventDefault();
-    let domain = domainInput.trim().toLowerCase();
-    if (!domain) return;
-
-    // Simple URL strip to extract clean hostname if user pasted URL
-    if (domain.includes("://")) {
-      try {
-        const urlObj = new URL(domain);
-        domain = urlObj.hostname;
-      } catch (err) {
-        // Fallback simple string strip
-        const match = domain.match(/:\/\/([^\/:]+)/);
-        if (match) domain = match[1];
-      }
-    }
-    if (domain.startsWith("www.")) {
-      domain = domain.substring(4);
-    }
-
+    // Same normalization the segmentation engine uses to group blocks by
+    // domain — exclusions and block domains must never disagree.
+    const domain = domainOf(domainInput) ?? "";
     if (!domain || excludedDomains.includes(domain)) return;
 
     const nextDomains = [...excludedDomains, domain];
@@ -696,7 +682,7 @@ export const Settings: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="font-sans text-[12px] text-text-muted">Keep raw recordings for</span>
+              <span className="font-sans text-[12px] text-text-muted">Keep raw recordings for — raw data expires, your work blocks and their evidence remain</span>
               <div className="grid grid-cols-4 gap-2 border border-border-hairline rounded-xl p-1 bg-card-surface/40">
                 {[7, 30, 90, 365].map((d) => {
                   const active = framesRetentionDays === d;

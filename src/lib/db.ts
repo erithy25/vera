@@ -1,4 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
+import { mergeEvidence, parseEvidenceJson } from "./segmentation";
 
 let dbInstance: Database | null = null;
 
@@ -81,6 +82,17 @@ export const activityRepo = {
     const db = await getDb();
     return db.select<DbActivityEvent[]>(
       "SELECT * FROM activity_events WHERE started_at >= $1 AND started_at < $2 ORDER BY started_at ASC",
+      [startMs, endMs]
+    );
+  },
+
+  // All activity events whose interval overlaps [startMs, endMs) — catches
+  // events that started before the window (e.g. spanning midnight) without
+  // fetching a whole extra day.
+  async eventsOverlapping(startMs: number, endMs: number): Promise<DbActivityEvent[]> {
+    const db = await getDb();
+    return db.select<DbActivityEvent[]>(
+      "SELECT * FROM activity_events WHERE started_at < $2 AND (started_at + duration_seconds * 1000) > $1 ORDER BY started_at ASC",
       [startMs, endMs]
     );
   },
@@ -183,6 +195,250 @@ export const framesRepo = {
     return db.select<DbFrame[]>(
       `SELECT ${FRAME_COLS} FROM frames WHERE timestamp >= $1 AND timestamp < $2 AND ${NOT_SYSTEM_APP} ORDER BY timestamp ASC`,
       [startMs, endMs]
+    );
+  },
+};
+
+// --- Billing data model (clients, projects, work blocks) ---
+
+export interface DbClient {
+  id: number;
+  name: string;
+  color: string | null;
+  hourly_rate_cents: number | null;
+  currency: string;
+  archived: number;
+  created_at: number;
+}
+
+export interface DbProject {
+  id: number;
+  client_id: number;
+  name: string;
+  billable: number;
+  hourly_rate_cents: number | null;
+  archived: number;
+  created_at: number;
+}
+
+// Project joined with its client, for pickers and rate resolution.
+export interface DbProjectWithClient extends DbProject {
+  client_name: string;
+  client_color: string | null;
+  client_rate_cents: number | null;
+  client_archived: number;
+}
+
+export type BlockStatus = "open" | "confirmed" | "discarded";
+
+export interface DbWorkBlock {
+  id: number;
+  started_at: number;
+  ended_at: number;
+  app_summary: string | null;
+  title_summary: string | null;
+  evidence: string | null; // JSON: { apps, titles, domains, terms }
+  project_id: number | null;
+  assignment_source: string | null; // 'manual' | 'rule' | 'llm'
+  confidence: number | null;
+  status: BlockStatus;
+  user_edited: number;
+}
+
+export const clientsRepo = {
+  async list(includeArchived = false): Promise<DbClient[]> {
+    const db = await getDb();
+    return db.select<DbClient[]>(
+      `SELECT * FROM clients ${includeArchived ? "" : "WHERE archived = 0"} ORDER BY name COLLATE NOCASE ASC`
+    );
+  },
+
+  async add(name: string, color: string | null, hourlyRateCents: number | null): Promise<number> {
+    const db = await getDb();
+    const result = await db.execute(
+      "INSERT INTO clients (name, color, hourly_rate_cents, currency, archived, created_at) VALUES ($1, $2, $3, 'EUR', 0, $4)",
+      [name, color, hourlyRateCents, Date.now()]
+    );
+    return result.lastInsertId!;
+  },
+
+  async update(id: number, name: string, color: string | null, hourlyRateCents: number | null): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE clients SET name = $1, color = $2, hourly_rate_cents = $3 WHERE id = $4",
+      [name, color, hourlyRateCents, id]
+    );
+  },
+
+  async setArchived(id: number, archived: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE clients SET archived = $1 WHERE id = $2", [archived ? 1 : 0, id]);
+  },
+};
+
+export const projectsRepo = {
+  async listWithClients(includeArchived = false): Promise<DbProjectWithClient[]> {
+    const db = await getDb();
+    return db.select<DbProjectWithClient[]>(
+      `SELECT p.*, c.name AS client_name, c.color AS client_color, c.hourly_rate_cents AS client_rate_cents, c.archived AS client_archived
+       FROM projects p JOIN clients c ON c.id = p.client_id
+       ${includeArchived ? "" : "WHERE p.archived = 0 AND c.archived = 0"}
+       ORDER BY c.name COLLATE NOCASE ASC, p.name COLLATE NOCASE ASC`
+    );
+  },
+
+  async add(clientId: number, name: string, billable: boolean, hourlyRateCents: number | null): Promise<number> {
+    const db = await getDb();
+    const result = await db.execute(
+      "INSERT INTO projects (client_id, name, billable, hourly_rate_cents, archived, created_at) VALUES ($1, $2, $3, $4, 0, $5)",
+      [clientId, name, billable ? 1 : 0, hourlyRateCents, Date.now()]
+    );
+    return result.lastInsertId!;
+  },
+
+  async setArchived(id: number, archived: boolean): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE projects SET archived = $1 WHERE id = $2", [archived ? 1 : 0, id]);
+  },
+};
+
+// The engine-ownership invariant, in ONE place: the segmentation engine owns
+// exactly the blocks that are open and untouched by the user. preservedForDay
+// is its negation; the recompute DELETE and the overlap repair both use it.
+const engineOwned = (prefix = "") =>
+  `(${prefix}status = 'open' AND ${prefix}user_edited = 0)`;
+const ENGINE_OWNED = engineOwned();
+
+export const blocksRepo = {
+  // All blocks whose start lies within [startMs, endMs), chronological.
+  async forDay(startMs: number, endMs: number): Promise<DbWorkBlock[]> {
+    const db = await getDb();
+    return db.select<DbWorkBlock[]>(
+      "SELECT * FROM work_blocks WHERE started_at >= $1 AND started_at < $2 ORDER BY started_at ASC",
+      [startMs, endMs]
+    );
+  },
+
+  // Blocks the segmentation engine must never touch: anything the user acted
+  // on (confirmed/discarded) or structurally edited.
+  async preservedForDay(startMs: number, endMs: number): Promise<DbWorkBlock[]> {
+    const db = await getDb();
+    return db.select<DbWorkBlock[]>(
+      `SELECT * FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND NOT ${ENGINE_OWNED} ORDER BY started_at ASC`,
+      [startMs, endMs]
+    );
+  },
+
+  // Idempotent recompute: replace the engine-owned (open, untouched) blocks
+  // of the day with a fresh computation. Preserved blocks stay as they are.
+  // A final repair pass removes any engine-owned block that overlaps a
+  // preserved one — this makes a user edit racing the recompute (confirm
+  // landing between the preserved snapshot and this write) self-healing
+  // instead of double-counting the time.
+  async replaceComputedForDay(
+    startMs: number,
+    endMs: number,
+    blocks: {
+      started_at: number;
+      ended_at: number;
+      app_summary: string;
+      title_summary: string;
+      evidence: string;
+    }[]
+  ): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      `DELETE FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND ${ENGINE_OWNED}`,
+      [startMs, endMs]
+    );
+    // Batched multi-row inserts: one statement per chunk instead of one IPC
+    // round trip + fsync per block.
+    const CHUNK = 40;
+    for (let i = 0; i < blocks.length; i += CHUNK) {
+      const chunk = blocks.slice(i, i + CHUNK);
+      const values: string[] = [];
+      const params: any[] = [];
+      let p = 1;
+      for (const b of chunk) {
+        values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, 'open', 0)`);
+        params.push(b.started_at, b.ended_at, b.app_summary, b.title_summary, b.evidence);
+      }
+      await db.execute(
+        `INSERT INTO work_blocks (started_at, ended_at, app_summary, title_summary, evidence, status, user_edited) VALUES ${values.join(", ")}`,
+        params
+      );
+    }
+    await db.execute(
+      `DELETE FROM work_blocks WHERE started_at >= $1 AND started_at < $2 AND ${ENGINE_OWNED}
+       AND EXISTS (
+         SELECT 1 FROM work_blocks p
+         WHERE p.id != work_blocks.id AND NOT ${engineOwned("p.")}
+           AND p.started_at < work_blocks.ended_at AND p.ended_at > work_blocks.started_at
+           AND p.started_at >= $1 AND p.started_at < $2
+       )`,
+      [startMs, endMs]
+    );
+  },
+
+  async setStatus(id: number, status: BlockStatus): Promise<void> {
+    const db = await getDb();
+    await db.execute("UPDATE work_blocks SET status = $1 WHERE id = $2", [status, id]);
+  },
+
+  async assignProject(id: number, projectId: number | null): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "UPDATE work_blocks SET project_id = $1, assignment_source = $2, confidence = NULL, user_edited = 1 WHERE id = $3",
+      [projectId, projectId === null ? null : "manual", id]
+    );
+  },
+
+  // Merge several blocks into one spanning block (user action). Evidence
+  // lists are unioned via the shared evidence contract; the project survives
+  // only if every block agrees.
+  async merge(ids: number[]): Promise<void> {
+    if (ids.length < 2) return;
+    const db = await getDb();
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ");
+    const rows = await db.select<DbWorkBlock[]>(
+      `SELECT * FROM work_blocks WHERE id IN (${placeholders})`,
+      ids
+    );
+    if (rows.length < 2) return;
+    const startedAt = Math.min(...rows.map((r) => r.started_at));
+    const endedAt = Math.max(...rows.map((r) => r.ended_at));
+    const merged = mergeEvidence(rows.map((r) => parseEvidenceJson(r.evidence)));
+    const projectIds = new Set(rows.map((r) => r.project_id));
+    const projectId = projectIds.size === 1 ? rows[0].project_id : null;
+    await db.execute(
+      "INSERT INTO work_blocks (started_at, ended_at, app_summary, title_summary, evidence, project_id, assignment_source, status, user_edited) VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', 1)",
+      [
+        startedAt,
+        endedAt,
+        merged.apps.join(" · "),
+        rows[0].title_summary,
+        JSON.stringify(merged),
+        projectId,
+        projectId === null ? null : "manual",
+      ]
+    );
+    await db.execute(`DELETE FROM work_blocks WHERE id IN (${placeholders})`, ids);
+  },
+
+  // Split a block at a point in time (user action). Both halves inherit the
+  // evidence and assignment and are marked user-edited.
+  async split(id: number, atMs: number): Promise<void> {
+    const db = await getDb();
+    const rows = await db.select<DbWorkBlock[]>("SELECT * FROM work_blocks WHERE id = $1", [id]);
+    const b = rows[0];
+    if (!b || atMs <= b.started_at || atMs >= b.ended_at) return;
+    await db.execute(
+      "UPDATE work_blocks SET ended_at = $1, user_edited = 1 WHERE id = $2",
+      [atMs, id]
+    );
+    await db.execute(
+      "INSERT INTO work_blocks (started_at, ended_at, app_summary, title_summary, evidence, project_id, assignment_source, confidence, status, user_edited) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)",
+      [atMs, b.ended_at, b.app_summary, b.title_summary, b.evidence, b.project_id, b.assignment_source, b.confidence, b.status]
     );
   },
 };
@@ -351,6 +607,28 @@ export const settingsRepo = {
     await db.execute(
       "INSERT OR REPLACE INTO settings (key, value) VALUES ('onboarding_complete', $1)",
       [complete ? "true" : "false"]
+    );
+  },
+
+  // Local-midnight timestamp (ms) of the last day fully covered by the block
+  // engine. Used to backfill days captured while the app was not running.
+  async getBlocksWatermark(): Promise<number | null> {
+    const db = await getDb();
+    const rows = await db.select<any[]>(
+      "SELECT value FROM settings WHERE key = 'blocks_watermark_day'"
+    );
+    if (rows.length > 0) {
+      const n = parseInt(rows[0].value, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return null;
+  },
+
+  async setBlocksWatermark(dayStartMs: number): Promise<void> {
+    const db = await getDb();
+    await db.execute(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('blocks_watermark_day', $1)",
+      [String(dayStartMs)]
     );
   },
 

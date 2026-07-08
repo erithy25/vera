@@ -7,7 +7,8 @@
     "dev": "npx vite",
     "build": "npx vite build",
     "preview": "npx vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:segmentation": "esbuild src/lib/segmentation.ts --bundle --format=esm --outfile=tests/.segmentation.bundle.mjs && node tests/segmentation.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.0.0",

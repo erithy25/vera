@@ -320,10 +320,26 @@ Kunden-/Projektstruktur — noch ohne KI-Zuordnung.
   `insertEvent`, `eventsForDay`, `activeDays`.
 
 **UMGEBAUT:**
-- `src/components/Dashboard.tsx`: rendert jetzt DayView ("Heute").
+- `src/components/Dashboard.tsx`: entfällt ersatzlos — die Route "Today"
+  rendert DayView direkt (die Platzhalter-Hülle aus Schicht 1 hatte keinen
+  weiteren Zweck).
 - Frames-Retention: `frames_retention_days` (Default 30) bleibt; neu
   dokumentiert als Produktversprechen "Rohdaten verfallen, Blöcke bleiben"
   — Blöcke tragen nur Text-Evidence und überleben die Rohdaten-Löschung.
+- Umsetzungsnotiz: Die Segmentierung schneidet lange Activity-Events in
+  Minuten-Scheiben und reichert sie mit URLs benachbarter Frames an
+  (±90 s, gleiche App), damit Browser-Arbeit wie geplant auf Domain-Ebene
+  gruppiert wird (`src/lib/segmentation.ts`, pur und replika-getestet;
+  Test eingecheckt: `npm run test:segmentation`).
+- Umsetzungsnotizen aus dem Schicht-2-Review für Schicht 3:
+  (1) `replaceComputedForDay` ist DELETE+INSERT — sobald Schicht 3
+  rule/llm-Zuweisungen auf offene Blöcke schreibt, muss der Recompute auf
+  abgleichende UPDATEs umgestellt werden, sonst löscht jeder 15-min-Lauf
+  die Zuweisungen. (2) Erwägen, die Browser-URL bereits in Rust auf
+  `activity_events` zu persistieren (Frames sind der verfallende Datenstrom,
+  Events der dauerhafte) — dann degradiert ein Recompute alter Tage nicht.
+  (3) OCR-Tokenisierung ggf. memoisieren, wenn die Klassifikation die
+  Frame-Texte erneut liest.
 
 **NACHWEIS/ABNAHME:** Segmentierung als Standalone-Replika-Test mit
 synthetischen activity/frames-Fixtures bewiesen (Grenzfälle: Idle, schnelle

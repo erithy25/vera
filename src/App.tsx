@@ -1,17 +1,23 @@
 import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { Dashboard } from "./components/Dashboard";
+import { DayView } from "./components/DayView";
+import { ClientsProjects } from "./components/ClientsProjects";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateChecker } from "./components/UpdateChecker";
 import { initializeDefaultSettings, settingsRepo } from "./lib/db";
+import { startBlockEngine } from "./lib/blocks";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 function App() {
   const [currentView, setCurrentView] = useState<string>("Today");
   const [dbReady, setDbReady] = useState<boolean>(false);
+  // True only when DB init actually succeeded — the block engine must never
+  // write against a broken/unmigrated database (dbReady alone also covers the
+  // degraded still-render-the-UI fallback).
+  const [dbHealthy, setDbHealthy] = useState<boolean>(false);
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   // Set when the capture sidecar reports missing screen-recording permission
   // (e.g. after macOS's monthly re-confirmation) — shown as a banner so
@@ -37,6 +43,7 @@ function App() {
           console.error("Failed to read onboarding flag:", err);
         }
         setDbReady(true);
+        setDbHealthy(true);
         // If screen recording is on, unlock the encrypted media store (Touch ID)
         // so backend capture can resume. Failure leaves recording locked, not broken.
         try {
@@ -54,6 +61,15 @@ function App() {
     }
     initDb();
   }, []);
+
+  // The block engine turns raw capture into work blocks: an immediate
+  // backfill run (watermark → today), then a refresh of today every 15
+  // minutes. Only starts when DB init really succeeded.
+  useEffect(() => {
+    if (!dbHealthy) return;
+    const stop = startBlockEngine();
+    return stop;
+  }, [dbHealthy]);
 
   // "Re-run onboarding" from Settings resets the flag and shows the flow again
   useEffect(() => {
@@ -141,8 +157,10 @@ function App() {
           {dbReady ? (
             currentView === "Settings" ? (
               <Settings />
+            ) : currentView === "Clients & Projects" ? (
+              <ClientsProjects />
             ) : (
-              <Dashboard />
+              <DayView />
             )
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center min-h-[300px]">

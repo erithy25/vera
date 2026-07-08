@@ -1783,6 +1783,49 @@ pub fn run() {
         ) OR key LIKE 'cloud_api_key_%';
       ",
       kind: MigrationKind::Up,
+    },
+    // v7 — the billing data model: clients, projects, and the work blocks the
+    // segmentation engine derives from raw capture. Blocks reference their
+    // evidence as JSON (top window titles, domains, OCR terms), so they
+    // survive raw-frame eviction.
+    Migration {
+      version: 7,
+      description: "create_billing_tables",
+      sql: "
+        CREATE TABLE IF NOT EXISTS clients (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          color TEXT,
+          hourly_rate_cents INTEGER,
+          currency TEXT NOT NULL DEFAULT 'EUR',
+          archived INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id INTEGER NOT NULL REFERENCES clients(id),
+          name TEXT NOT NULL,
+          billable INTEGER NOT NULL DEFAULT 1,
+          hourly_rate_cents INTEGER,
+          archived INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS work_blocks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL,
+          app_summary TEXT,
+          title_summary TEXT,
+          evidence TEXT,
+          project_id INTEGER REFERENCES projects(id),
+          assignment_source TEXT,
+          confidence REAL,
+          status TEXT NOT NULL DEFAULT 'open',
+          user_edited INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_blocks_day ON work_blocks(started_at);
+      ",
+      kind: MigrationKind::Up,
     }
   ];
 
