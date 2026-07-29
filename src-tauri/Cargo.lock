@@ -5801,12 +5801,10 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "vera"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "base64 0.22.1",
  "cc",
  "libc",
  "log",
- "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -5820,6 +5818,17 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tauri-plugin-updater",
+ "vera-core",
+]
+
+[[package]]
+name = "vera-core"
+version = "0.5.2"
+dependencies = [
+ "aes-gcm",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -15,9 +15,26 @@
 //   int  vault_has_key(void);                 // 1 if a key exists, 0 otherwise (no prompt)
 //   int  vault_get_or_create(uint8_t *out32); // fills 32 bytes; 0 = ok, <0 = error
 //   int  vault_delete_key(void);              // remove the key (full reset)
+//   int  vault_protection_mode(void);         // 0 unknown, 1 biometry, 2 plain
+//
+// Generic secrets (API keys) — see the section at the end of this file:
+//   int  vault_set_secret(const char *account, const char *value);
+//   int  vault_get_secret(const char *account, char *out, int capacity);
+//   int  vault_delete_secret(const char *account);
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
+
+// Which protection actually took effect for the media key.
+// 0 = unknown, 1 = biometry-gated (Secure Enclave), 2 = plain keychain item.
+#define VAULT_MODE_UNKNOWN  0
+#define VAULT_MODE_BIOMETRY 1
+#define VAULT_MODE_PLAIN    2
+static int g_vault_mode = VAULT_MODE_UNKNOWN;
+
+// Reports the mode of the current session. Callers use this to tell the user
+// the truth about how their key is protected.
+int vault_protection_mode(void) { return g_vault_mode; }
 
 static NSString *const kVaultService = @"app.vera.desktop.vault";
 static NSString *const kVaultAccount = @"media-master-key";
@@ -76,10 +93,26 @@ static int vault_fetch(uint8_t *out) {
 // Preferred: Touch-ID-gated item in the data-protection keychain.
 static OSStatus vault_store_biometry(uint8_t *key) {
     CFErrorRef acErr = NULL;
+    // kSecAccessControlUserPresence, NOT kSecAccessControlBiometryCurrentSet.
+    //
+    // BiometryCurrentSet invalidates the keychain item the moment the user adds
+    // or removes a fingerprint. At that instant the media key is gone for good,
+    // and with it every encrypted segment and thumbnail — silently, with no
+    // warning, and with no way to recover. For a product whose entire value is
+    // long-term memory, that was the most damaging behaviour in the codebase.
+    //
+    // UserPresence keeps the item across biometry changes and still requires an
+    // explicit unlock: Touch ID, or the login password as fallback. That
+    // fallback also covers a broken or missing Touch ID sensor, which
+    // BiometryCurrentSet did not.
+    //
+    // kSecAttrAccessibleWhenUnlockedThisDeviceOnly stays. It is the deliberate
+    // choice: the key never leaves this Mac and never enters a backup. Migrating
+    // to a new machine therefore starts a fresh vault — documented, not silent.
     SecAccessControlRef access = SecAccessControlCreateWithFlags(
         kCFAllocatorDefault,
         kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        kSecAccessControlBiometryCurrentSet,
+        kSecAccessControlUserPresence,
         &acErr);
     if (acErr) CFRelease(acErr);
     if (access == NULL) {
@@ -109,9 +142,16 @@ static int vault_create(uint8_t *out) {
         return -10;
     }
 
+    // Records which mode actually took effect. Previously the fallback was
+    // silent: a user promised "Touch ID / Secure Enclave" could end up with a
+    // plain keychain item and never learn about it. vault_protection_mode()
+    // now makes that answerable. (audit finding F-5)
     OSStatus st = vault_store_biometry(key);
-    if (st != errSecSuccess) {
+    if (st == errSecSuccess) {
+        g_vault_mode = VAULT_MODE_BIOMETRY;
+    } else {
         st = vault_store_plain(key);
+        g_vault_mode = (st == errSecSuccess) ? VAULT_MODE_PLAIN : VAULT_MODE_UNKNOWN;
     }
 
     if (st != errSecSuccess) {
@@ -136,4 +176,72 @@ int vault_delete_key(void) {
     BOOL ok = (s1 == errSecSuccess || s1 == errSecItemNotFound) &&
               (s2 == errSecSuccess || s2 == errSecItemNotFound);
     return ok ? 0 : -1;
+}
+
+// MARK: - Generic secret storage (audit finding F-1)
+//
+// Cloud API keys used to be written to the SQLite settings table in plaintext,
+// while this file already implemented a correct Keychain vault for the media
+// key. The mechanism was there; it just was not used for the more sensitive
+// secret. These three functions close that gap.
+//
+// Deliberately a plain keychain item, not a biometry-gated one: the API key is
+// read on every cloud request in the background. A Touch ID prompt per request
+// would make the feature unusable, and users would go back to pasting keys into
+// places that are worse than the Keychain.
+
+static NSString *const kSecretService = @"app.vera.desktop.secrets";
+
+static NSMutableDictionary *secret_query(NSString *account) {
+    return [@{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: kSecretService,
+        (id)kSecAttrAccount: account,
+        (id)kSecAttrAccessible: (id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    } mutableCopy];
+}
+
+// Stores or replaces a secret. 0 = ok, <0 = error.
+int vault_set_secret(const char *account, const char *value) {
+    if (account == NULL || value == NULL) return -1;
+    NSString *acc = [NSString stringWithUTF8String:account];
+    NSData *data = [[NSString stringWithUTF8String:value] dataUsingEncoding:NSUTF8StringEncoding];
+    if (acc == nil || data == nil) return -1;
+
+    SecItemDelete((__bridge CFDictionaryRef)secret_query(acc));
+    NSMutableDictionary *attrs = secret_query(acc);
+    attrs[(id)kSecValueData] = data;
+    OSStatus st = SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+    return st == errSecSuccess ? 0 : -2;
+}
+
+// Reads a secret into `out` (caller-provided buffer of `capacity` bytes).
+// Returns the byte length written, or <0 on error. The value is NUL-terminated
+// when it fits.
+int vault_get_secret(const char *account, char *out, int capacity) {
+    if (account == NULL || out == NULL || capacity <= 0) return -1;
+    NSString *acc = [NSString stringWithUTF8String:account];
+    if (acc == nil) return -1;
+
+    NSMutableDictionary *q = secret_query(acc);
+    q[(id)kSecReturnData] = @YES;
+    q[(id)kSecMatchLimit] = (id)kSecMatchLimitOne;
+
+    CFTypeRef result = NULL;
+    OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+    if (st != errSecSuccess || result == NULL) return -3;
+
+    NSData *data = (__bridge_transfer NSData *)result;
+    if ((int)data.length >= capacity) return -4;  // caller must retry larger
+    memcpy(out, data.bytes, data.length);
+    out[data.length] = 0;
+    return (int)data.length;
+}
+
+int vault_delete_secret(const char *account) {
+    if (account == NULL) return -1;
+    NSString *acc = [NSString stringWithUTF8String:account];
+    if (acc == nil) return -1;
+    OSStatus st = SecItemDelete((__bridge CFDictionaryRef)secret_query(acc));
+    return (st == errSecSuccess || st == errSecItemNotFound) ? 0 : -2;
 }

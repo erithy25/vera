@@ -36,6 +36,67 @@ extern "C" {
     // Media-key vault (Keychain + Touch ID / Secure Enclave). See src/vault.m.
     fn vault_has_key() -> i32;
     fn vault_get_or_create(out: *mut u8) -> i32;
+    // Generic secret storage — API keys. See vault.m (audit finding F-1).
+    fn vault_set_secret(account: *const c_char, value: *const c_char) -> i32;
+    fn vault_get_secret(account: *const c_char, out: *mut c_char, capacity: i32) -> i32;
+    fn vault_delete_secret(account: *const c_char) -> i32;
+    fn vault_protection_mode() -> i32;
+}
+
+// ---------- Delegation to vera-core ----------
+//
+// These functions used to be implemented here — and, for redaction, the Luhn
+// check and app categorisation, also a second time in TypeScript and a third
+// time in Swift. The comments on the old versions said so outright ("Port of
+// redactSensitiveData (src/lib/db.ts)"). The copies had drifted apart, and the
+// differences were security-relevant.
+//
+// Now there is one implementation, in vera-core, with tests. What remains here
+// are thin adapters so the call sites in this file stay unchanged.
+
+use vera_core::{crypto, privacy, redact};
+
+const SYSTEM_PROCESS_BLOCKLIST: &[&str] = privacy::SYSTEM_PROCESS_BLOCKLIST;
+
+fn is_browser(app_name: &str, bundle_id: &str) -> bool {
+    privacy::is_browser(app_name, bundle_id)
+}
+
+fn is_system_process(app_name: &str, bundle_id: &str) -> bool {
+    privacy::is_system_process(app_name, bundle_id)
+}
+
+fn is_system_process_name(app_name: &str) -> bool {
+    privacy::is_system_process_name(app_name)
+}
+
+#[allow(dead_code)] // domain filtering returns with a later capture prompt
+fn is_domain_excluded(url: &str, excluded_domains: &[String]) -> bool {
+    privacy::is_domain_excluded(url, excluded_domains)
+}
+
+fn is_sensitive_app_in_list(app_name: &str, bundle_id: &str, excluded_apps: &[String]) -> bool {
+    privacy::is_app_excluded(app_name, bundle_id, excluded_apps)
+}
+
+fn categorize_app(app_name: &str) -> String {
+    privacy::categorize_app(app_name).to_string()
+}
+
+fn redact_sensitive_data(text: &str) -> String {
+    redact::redact(text)
+}
+
+fn is_encrypted(data: &[u8]) -> bool {
+    crypto::is_encrypted(data)
+}
+
+fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    crypto::encrypt(key, plaintext).map_err(|e| e.to_string())
+}
+
+fn decrypt_bytes(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> {
+    crypto::decrypt(key, data).map_err(|e| e.to_string())
 }
 
 struct PrivacySettings {
@@ -70,57 +131,13 @@ struct VaultState {
     key: Mutex<Option<[u8; 32]>>,
 }
 
-fn is_browser(app_name: &str, bundle_id: &str) -> bool {
-    let app_lower = app_name.to_lowercase();
-    let bundle_lower = bundle_id.to_lowercase();
-    app_lower == "safari" || bundle_lower == "com.apple.safari" ||
-    app_lower == "google chrome" || app_lower == "chrome" || bundle_lower == "com.google.chrome" ||
-    app_lower == "arc" || bundle_lower == "company.thebrowser.browser" ||
-    app_lower == "microsoft edge" || app_lower == "edge" || bundle_lower == "com.microsoft.edgemc" || bundle_lower == "com.microsoft.edge"
-}
+
 
 // Processes that must never be recorded as user activity. Matched against the
 // lowercased app name exactly (never as substring), so real apps like
 // "System Settings" or "Docker" are not affected.
-const SYSTEM_PROCESS_BLOCKLIST: &[&str] = &[
-    "loginwindow",
-    "login window",
-    "screensaverengine",
-    "screensaver",
-    "screen saver",
-    "windowserver",
-    "window server",
-    "systemuiserver",
-    "controlcenter",
-    "control center",
-    "notificationcenter",
-    "notification center",
-    "usernotificationcenter",
-    "spotlight",
-    "coreautha",
-    "universalcontrol",
-    "wallpaper",
-    "talagent",
-    "screencaptureui",
-    "lockoutagent",
-    "dock",
-    "unknown", // tracker fallback when a process has no proper localized name
-];
 
-fn is_system_process(app_name: &str, bundle_id: &str) -> bool {
-    let app_lower = app_name.to_lowercase();
-    let bundle_lower = bundle_id.to_lowercase();
 
-    SYSTEM_PROCESS_BLOCKLIST.contains(&app_lower.as_str())
-        || bundle_lower.contains("loginwindow")
-        || bundle_lower.contains("windowserver")
-        || bundle_lower.contains("screensaver")
-        || bundle_lower.contains("systemuiserver")
-        || bundle_lower.contains("notificationcenter")
-        || bundle_lower.contains("spotlight")
-        || bundle_lower == "com.apple.controlcenter"
-        || bundle_lower == "com.apple.dock"
-}
 
 fn get_active_browser_url(app_name: &str, bundle_id: &str) -> Option<String> {
     let app_lower = app_name.to_lowercase();
@@ -164,48 +181,9 @@ fn get_active_browser_url(app_name: &str, bundle_id: &str) -> Option<String> {
     None
 }
 
-#[allow(dead_code)] // domain filtering returns with a later capture prompt
-fn is_domain_excluded(url: &str, excluded_domains: &[String]) -> bool {
-    let mut host = url;
-    if let Some(idx) = url.find("://") {
-        host = &url[idx + 3..];
-    }
-    if let Some(idx) = host.find('/') {
-        host = &host[..idx];
-    }
-    if let Some(idx) = host.find(':') {
-        host = &host[..idx];
-    }
-    if host.starts_with("www.") {
-        host = &host[4..];
-    }
 
-    let host_lower = host.to_lowercase();
 
-    for domain in excluded_domains {
-        let mut dom = domain.as_str();
-        if dom.starts_with("www.") {
-            dom = &dom[4..];
-        }
-        let dom_lower = dom.to_lowercase();
-        if host_lower == dom_lower || host_lower.ends_with(&format!(".{}", dom_lower)) {
-            return true;
-        }
-    }
-    false
-}
 
-fn is_sensitive_app_in_list(app_name: &str, bundle_id: &str, excluded_apps: &[String]) -> bool {
-    let app_lower = app_name.to_lowercase();
-    let bundle_lower = bundle_id.to_lowercase();
-    for app in excluded_apps {
-        let sens_lower = app.to_lowercase();
-        if app_lower.contains(&sens_lower) || bundle_lower.contains(&sens_lower) {
-            return true;
-        }
-    }
-    false
-}
 
 #[tauri::command]
 fn has_accessibility_permission() -> bool {
@@ -241,11 +219,22 @@ fn request_screen_recording_permission() -> bool {
     unsafe { ffi_request_screen_recording_permission() }
 }
 
-/// Write a UTF-8 text file to an explicit, user-chosen path (from the export
-/// save dialog). Kept minimal on purpose — no fs plugin / path scope needed.
+/// Write a UTF-8 text file to a user-chosen path from the export save dialog.
+///
+/// Audit finding F-2: the previous version wrote arbitrary content to any path,
+/// with a comment explaining that Tauri's path scoping had been skipped on
+/// purpose. It is now restricted to export file types, and the normalised path
+/// is what gets written.
 #[tauri::command]
 fn write_text_file_at(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))
+    let normalised = vera_core::paths::normalise(std::path::Path::new(&path));
+    if !vera_core::paths::has_extension(&normalised, vera_core::paths::EXPORT_EXTENSIONS) {
+        return Err(format!(
+            "refused export path: only {} are allowed",
+            vera_core::paths::EXPORT_EXTENSIONS.join(", ")
+        ));
+    }
+    std::fs::write(&normalised, contents).map_err(|e| format!("Failed to write file: {}", e))
 }
 
 // ---------- Backend-side capture/activity persistence ----------
@@ -261,98 +250,13 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Port of isLuhnValid (src/lib/db.ts).
-fn is_luhn_valid(s: &str) -> bool {
-    let mut sum = 0u32;
-    let mut double = false;
-    for c in s.chars().rev() {
-        let d = match c.to_digit(10) {
-            Some(d) => d,
-            None => return false,
-        };
-        let mut d = d;
-        if double {
-            d *= 2;
-            if d > 9 {
-                d -= 9;
-            }
-        }
-        sum += d;
-        double = !double;
-    }
-    sum % 10 == 0
-}
 
-/// Port of redactSensitiveData (src/lib/db.ts). Regex literals are compiled
-/// with `.ok()` so a (theoretically impossible) bad pattern can never panic.
-fn redact_sensitive_data(text: &str) -> String {
-    let mut out = text.to_string();
 
-    // 1. Credit cards (13–16 digits, optional spaces/hyphens), Luhn-validated
-    if let Ok(re) = regex::Regex::new(r"\b(?:\d[ -]?){13,16}\b") {
-        out = re
-            .replace_all(&out, |caps: &regex::Captures| {
-                let m = caps.get(0).map(|x| x.as_str()).unwrap_or("");
-                let clean: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
-                if is_luhn_valid(&clean) {
-                    "[redacted]".to_string()
-                } else {
-                    m.to_string()
-                }
-            })
-            .into_owned();
-    }
-    // 2. IBANs
-    if let Ok(re) = regex::Regex::new(r"(?i)\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b") {
-        out = re.replace_all(&out, "[redacted]").into_owned();
-    }
-    // 3. Long all-digit runs (account/IDs/phone lists)
-    if let Ok(re) = regex::Regex::new(r"\b\d{10,}\b") {
-        out = re.replace_all(&out, "[redacted]").into_owned();
-    }
-    // 4. API keys / tokens
-    let patterns = [
-        r"sk-(proj-)?[a-zA-Z0-9]{48,}",
-        r"rk_live_[a-zA-Z0-9]{24}",
-        r"sk_live_[a-zA-Z0-9]{24}",
-        r"ghp_[a-zA-Z0-9]{36,}",
-        r"AKIA[0-9A-Z]{16}",
-        r#"(?i)\b(?:bearer|token|password|secret|passwd|auth[_-]?token)\s*[:=]\s*["']?[a-zA-Z0-9_\-\.]{16,}["']?"#,
-    ];
-    for p in patterns {
-        if let Ok(re) = regex::Regex::new(p) {
-            out = re.replace_all(&out, "[redacted]").into_owned();
-        }
-    }
-    out
-}
 
-/// Port of categorizeApp (src/lib/db.ts).
-fn categorize_app(app_name: &str) -> String {
-    let n = app_name.to_lowercase();
-    let has = |k: &str| n.contains(k);
-    if has("code") || has("xcode") || has("terminal") || has("warp") || has("iterm") || has("developer") {
-        "code".to_string()
-    } else if has("figma") || has("sketch") || has("photoshop") || has("illustrator") || has("framer") {
-        "design".to_string()
-    } else if has("notion") || has("obsidian") || has("word") || has("pages") || has("textedit") || has("book") || has("reader") {
-        "docs".to_string()
-    } else if has("message") || has("slack") || has("mail") || has("discord") || has("whatsapp") || has("telegram") {
-        "comms".to_string()
-    } else if has("zoom") || has("meet") || has("facetime") || has("teams") || has("webex") {
-        "meeting".to_string()
-    } else if has("arc") || has("chrome") || has("safari") || has("firefox") || has("edge") || has("browser") {
-        "browser".to_string()
-    } else {
-        "other".to_string()
-    }
-}
 
-/// Name-only system-process guard (mirrors isSystemProcessName in db.ts).
-fn is_system_process_name(app_name: &str) -> bool {
-    let n = app_name.to_lowercase();
-    SYSTEM_PROCESS_BLOCKLIST.contains(&n.as_str()) || n.contains("loginwindow")
-}
+
+
+
 
 fn open_vera_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let path = resolve_db_path(app).ok_or_else(|| "vera.db not found yet".to_string())?;
@@ -520,7 +424,6 @@ fn apply_pause(app: &tauri::AppHandle, paused: bool) {
 // are encrypted in place; retrieval decrypts to a temp file on demand.
 
 /// Encrypted file format: b"VEG1" || nonce(12) || ciphertext+tag.
-const VAULT_MAGIC: &[u8; 4] = b"VEG1";
 
 fn current_media_key(app: &tauri::AppHandle) -> Option<[u8; 32]> {
     app.state::<VaultState>().key.lock().ok().and_then(|k| *k)
@@ -530,37 +433,11 @@ fn vault_is_unlocked(app: &tauri::AppHandle) -> bool {
     current_media_key(app).is_some()
 }
 
-fn is_encrypted(data: &[u8]) -> bool {
-    data.len() >= 4 && &data[0..4] == VAULT_MAGIC
-}
 
-fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
-    use aes_gcm::{Aes256Gcm, Key};
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ct = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|_| "encrypt failed".to_string())?;
-    let mut out = Vec::with_capacity(4 + 12 + ct.len());
-    out.extend_from_slice(VAULT_MAGIC);
-    out.extend_from_slice(nonce.as_slice());
-    out.extend_from_slice(&ct);
-    Ok(out)
-}
 
-fn decrypt_bytes(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> {
-    use aes_gcm::aead::{Aead, KeyInit};
-    use aes_gcm::{Aes256Gcm, Key, Nonce};
-    if data.len() < 4 + 12 + 16 || &data[0..4] != VAULT_MAGIC {
-        return Err("not an encrypted vault file".to_string());
-    }
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(&data[4..16]);
-    cipher
-        .decrypt(nonce, &data[16..])
-        .map_err(|_| "decrypt failed (wrong key or corrupt)".to_string())
-}
+
+
+
 
 /// Encrypt a media file in place (atomic). No-op if already encrypted; errors
 /// if the vault is locked (the supervisor only captures while unlocked).
@@ -632,7 +509,17 @@ fn has_vault_key() -> bool {
 /// "decrypt only top-N" behaviour is observable.
 #[tauri::command]
 fn get_frame_thumbnail(app: tauri::AppHandle, thumbnail_path: String) -> Result<String, String> {
-    let data = std::fs::read(&thumbnail_path).map_err(|e| format!("read thumbnail: {}", e))?;
+    // Audit finding F-2: this used to read any path the webview handed over and
+    // return it base64-encoded — an arbitrary-file-read primitive reachable from
+    // the UI. It is now confined to the frames directory, and the checked path
+    // is what gets read (never the raw input).
+    let root = frames_dir(&app)?;
+    let path = vera_core::paths::confine(&thumbnail_path, &root)
+        .map_err(|e| format!("refused thumbnail path: {}", e))?;
+    if !vera_core::paths::has_extension(&path, vera_core::paths::THUMBNAIL_EXTENSIONS) {
+        return Err("refused thumbnail path: not an image".into());
+    }
+    let data = std::fs::read(&path).map_err(|e| format!("read thumbnail: {}", e))?;
     let plaintext = if is_encrypted(&data) {
         let key = current_media_key(&app).ok_or_else(|| "vault locked".to_string())?;
         decrypt_bytes(&key, &data)?
@@ -885,6 +772,11 @@ async fn extract_frame_near(app: tauri::AppHandle, timestamp: i64) -> Result<Str
     let temp_mov = std::env::temp_dir().join(format!("vera-seg-{}.mov", now_epoch_ms()));
     decrypt_file_to(&app, Path::new(&seg_path), &temp_mov)?;
 
+    // Audit finding F-3: the extracted JPEG used to be returned as a path and
+    // never deleted. Every frame the user opened in the timeline left a
+    // permanent plaintext screenshot on disk — the exact data the vault exists
+    // to protect. It is now read back, deleted immediately, and handed to the
+    // UI as a data URL, so nothing plaintext survives the call.
     let out = std::env::temp_dir().join(format!("vera-frame-{}.jpg", now_epoch_ms()));
     let output = std::process::Command::new(&helper)
         .arg(&temp_mov)
@@ -899,7 +791,11 @@ async fn extract_frame_near(app: tauri::AppHandle, timestamp: i64) -> Result<Str
         serde_json::from_str(stdout.trim()).unwrap_or(serde_json::Value::Null);
     if parsed.get("status").and_then(|s| s.as_str()) == Some("ok") {
         let _ = segment_id; // (kept for clarity/logging parity)
-        Ok(out.to_string_lossy().to_string())
+        let bytes = std::fs::read(&out).map_err(|e| format!("read extracted frame: {}", e))?;
+        let _ = std::fs::remove_file(&out); // never leave plaintext media around
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(format!("data:image/jpeg;base64,{}", b64))
     } else {
         let err = parsed
             .get("error")
@@ -1459,6 +1355,102 @@ fn read_setting(conn: &rusqlite::Connection, key: &str) -> Option<String> {
     .ok()
 }
 
+// ---------- API keys in the Keychain (audit finding F-1) ----------
+//
+// These used to be written to the SQLite settings table in plaintext, next to
+// an unused Secure-Enclave vault that this same codebase already implemented.
+// The mechanism existed; it was simply not used for the more sensitive secret.
+//
+// The migration below moves keys from existing installs into the Keychain and
+// deletes the row. It stores first and deletes second: if the process dies in
+// between, the key exists twice — recoverable. The other order could destroy a
+// key the user pasted once and never wrote down.
+
+use std::ffi::{CStr, CString};
+use vera_core::secrets::{self, Provider};
+
+fn keychain_set(account: &str, value: &str) -> Result<(), String> {
+    let a = CString::new(account).map_err(|_| "bad account name")?;
+    let v = CString::new(value).map_err(|_| "key contains a NUL byte")?;
+    match unsafe { vault_set_secret(a.as_ptr(), v.as_ptr()) } {
+        0 => Ok(()),
+        code => Err(format!("Keychain write failed (code {code})")),
+    }
+}
+
+fn keychain_get(account: &str) -> Option<String> {
+    let a = CString::new(account).ok()?;
+    let mut buf = vec![0i8; 1024];
+    let n = unsafe { vault_get_secret(a.as_ptr(), buf.as_mut_ptr(), buf.len() as i32) };
+    if n < 0 {
+        return None;
+    }
+    unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_str()
+        .ok()
+        .map(|s| s.to_string())
+}
+
+fn keychain_delete(account: &str) -> Result<(), String> {
+    let a = CString::new(account).map_err(|_| "bad account name")?;
+    match unsafe { vault_delete_secret(a.as_ptr()) } {
+        0 => Ok(()),
+        code => Err(format!("Keychain delete failed (code {code})")),
+    }
+}
+
+/// How the media key is actually protected this session.
+/// Previously the fallback from Secure Enclave to a plain keychain item was
+/// silent — a user promised Touch ID could get something weaker and never know.
+#[tauri::command]
+fn vault_protection() -> &'static str {
+    match unsafe { vault_protection_mode() } {
+        1 => "biometry",
+        2 => "keychain",
+        _ => "unknown",
+    }
+}
+
+struct KeychainStore;
+impl secrets::SecretStore for KeychainStore {
+    fn set(&mut self, account: &str, value: &str) -> Result<(), String> {
+        keychain_set(account, value)
+    }
+    fn get(&self, account: &str) -> Option<String> {
+        keychain_get(account)
+    }
+    fn delete(&mut self, account: &str) -> Result<(), String> {
+        keychain_delete(account)
+    }
+}
+
+struct DbSettings<'a>(&'a tauri::AppHandle);
+impl secrets::LegacySettings for DbSettings<'_> {
+    fn read(&self, key: &str) -> Option<String> {
+        read_setting_from_app(self.0, key)
+    }
+    fn delete(&mut self, key: &str) -> Result<(), String> {
+        let path = db_path_for_write(self.0)?;
+        let conn = open_settings_db(&path)?;
+        conn.execute("DELETE FROM settings WHERE key = ?1", [key])
+            .map(|_| ())
+            .map_err(|e| format!("delete legacy key: {e}"))
+    }
+}
+
+/// Runs once at startup. Idempotent — a second run finds nothing to do.
+fn migrate_api_keys_to_keychain(app: &tauri::AppHandle) {
+    let mut store = KeychainStore;
+    let mut settings = DbSettings(app);
+    let report = secrets::migrate_plaintext_keys(&mut store, &mut settings);
+    if !report.is_empty() {
+        println!(
+            "[Vera Secrets] migrated {:?} to Keychain, discarded {:?}, failed {:?}",
+            report.migrated, report.discarded, report.failed
+        );
+    }
+}
+
 fn read_setting_from_app(app: &tauri::AppHandle, key: &str) -> Option<String> {
     let path = resolve_db_path(app)?;
     let conn = rusqlite::Connection::open(&path).ok()?;
@@ -1478,35 +1470,51 @@ fn provider_label(provider: &str) -> &'static str {
 
 #[tauri::command]
 fn save_cloud_api_key(app: tauri::AppHandle, provider: String, key: String) -> Result<(), String> {
-    validate_provider(&provider)?;
-    let path = db_path_for_write(&app)?;
-    let conn = open_settings_db(&path)?;
-    let setting_key = format!("cloud_api_key_{}", provider);
+    let provider = Provider::parse(&provider)
+        .ok_or_else(|| format!("Unknown cloud provider '{provider}'"))?;
+    let account = provider.keychain_account();
     let trimmed = key.trim();
+
     if trimmed.is_empty() {
-        conn.execute("DELETE FROM settings WHERE key = ?1", [setting_key.as_str()])
-            .map_err(|e| format!("Failed to remove API key: {}", e))?;
-        println!("[Vera AI] Cloud API key removed for provider {}", provider);
-    } else {
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params![setting_key, trimmed],
-        )
-        .map_err(|e| format!("Failed to save API key: {}", e))?;
-        // Log only the fact that a key was saved — never the key itself
-        println!("[Vera AI] Cloud API key saved for provider {}", provider);
+        keychain_delete(&account)?;
+        // Also clear any leftover plaintext row from before the migration.
+        let _ = secrets::LegacySettings::delete(
+            &mut DbSettings(&app),
+            &provider.legacy_settings_key(),
+        );
+        println!("[Vera AI] Cloud API key removed for provider {}", provider.as_str());
+        return Ok(());
     }
+
+    if !secrets::looks_like_api_key(trimmed) {
+        return Err("That does not look like an API key. Check for stray spaces.".into());
+    }
+
+    keychain_set(&account, trimmed)?;
+    let _ = secrets::LegacySettings::delete(
+        &mut DbSettings(&app),
+        &provider.legacy_settings_key(),
+    );
+    // Log the fact, never the key.
+    println!("[Vera AI] Cloud API key stored in Keychain for {}", provider.as_str());
     Ok(())
+}
+
+/// Reads a cloud key. Keychain first; the legacy plaintext row is only consulted
+/// as a fallback for installs where the migration has not run yet.
+fn read_cloud_api_key(app: &tauri::AppHandle, provider: Provider) -> Option<String> {
+    keychain_get(&provider.keychain_account())
+        .or_else(|| read_setting_from_app(app, &provider.legacy_settings_key()))
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
 }
 
 #[tauri::command]
 fn has_cloud_api_key(app: tauri::AppHandle, provider: String) -> bool {
-    if validate_provider(&provider).is_err() {
-        return false;
+    match Provider::parse(&provider) {
+        Some(p) => read_cloud_api_key(&app, p).is_some(),
+        None => false,
     }
-    read_setting_from_app(&app, &format!("cloud_api_key_{}", provider))
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
 }
 
 fn truncate_for_error(body: &str) -> String {
@@ -1712,7 +1720,11 @@ fn read_cloud_config(app: &tauri::AppHandle) -> Result<CloudConfig, String> {
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| default_model.to_string());
 
-    let key = read_setting(&conn, &format!("cloud_api_key_{}", provider)).unwrap_or_default();
+    // Keychain, not the settings table (audit finding F-1).
+    let key = Provider::parse(&provider)
+        .and_then(|p| keychain_get(&p.keychain_account()))
+        .or_else(|| read_setting(&conn, &format!("cloud_api_key_{}", provider)))
+        .unwrap_or_default();
     let key = key.trim().to_string();
     if key.is_empty() {
         return Err(format!(
@@ -1766,7 +1778,8 @@ async fn test_cloud_connection(
 
     let resolved_key = match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => read_setting_from_app(&app, &format!("cloud_api_key_{}", provider))
+        None => Provider::parse(&provider)
+            .and_then(|p| read_cloud_api_key(&app, p))
             .map(|k| k.trim().to_string())
             .filter(|k| !k.is_empty())
             .ok_or_else(|| {
@@ -2056,7 +2069,8 @@ pub fn run() {
       vault_unlock,
       is_vault_unlocked,
       has_vault_key,
-      get_frame_thumbnail
+      get_frame_thumbnail,
+      vault_protection
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -2082,6 +2096,9 @@ pub fn run() {
 
           match db_file {
               Some(path) => {
+                  // Move any plaintext API key from the settings table into
+                  // the Keychain before anything else touches the database.
+                  migrate_api_keys_to_keychain(app.handle());
                   match cleanup_system_process_rows(&path) {
                       Ok((deleted, names)) => {
                           println!(

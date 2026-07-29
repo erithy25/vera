@@ -1,3 +1,6 @@
+[workspace]
+members = ["core"]
+
 [package]
 name = "vera"
 version = "0.1.0"
@@ -19,6 +22,9 @@ tauri-build = { version = "2.6.2", features = [] }
 cc = "1.0"
 
 [dependencies]
+# Core logic without Tauri — builds and tests on any platform.
+# See src-tauri/core/src/lib.rs for why this split exists.
+vera-core = { path = "core" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
@@ -35,11 +41,8 @@ tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Cloud engine HTTP calls (Anthropic / OpenAI / Ollama non-streaming)
 reqwest = { version = "0.12", features = ["json"] }
-# Sensitive-data redaction for backend-side capture persistence
-regex = "1"
+# regex and aes-gcm moved to vera-core, where they are covered by tests
 # SIGTERM to the frame-capture sidecar for graceful HEVC segment finalize
 libc = "0.2"
-# AES-256-GCM encryption at rest for screen-recording media (segments + thumbnails)
-aes-gcm = "0.10"
 # base64 for returning decrypted thumbnails as data URLs to the webview
 base64 = "0.22"

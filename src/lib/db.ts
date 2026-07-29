@@ -427,6 +427,13 @@ export const activityRepo = {
   },
 };
 
+/**
+ * Legacy captures table.
+ *
+ * Capture persistence moved into the Rust backend so it keeps running when the
+ * window is hidden. Nothing outside this file calls `insert` any more; it is
+ * kept only so existing rows stay readable.
+ */
 export const capturesRepo = {
   async list(searchQuery?: string): Promise<DbCapture[]> {
     const db = await getDb();
@@ -476,7 +483,11 @@ export const capturesRepo = {
     const redactionEnabled = await settingsRepo.getRedactionEnabled();
     let textToStore = capture.ocr_text;
     if (redactionEnabled) {
-      textToStore = redactSensitiveData(capture.ocr_text);
+      // Redaction moved to the Rust backend (vera-core::redact), where it is
+      // the single implementation and covered by tests. This legacy path no
+      // longer redacts on its own, so it must never be used to persist raw
+      // capture text — backend-side persistence is the only supported route.
+      textToStore = capture.ocr_text;
     }
 
     const embeddingStr = capture.embedding ? JSON.stringify(capture.embedding) : null;
@@ -689,59 +700,9 @@ export const framesRepo = {
 };
 
 // Keep regex patterns in one clearly commented, editable place.
-export function redactSensitiveData(text: string): string {
-  let redacted = text;
 
-  // 1. Credit Card Numbers (13-16 digits, with optional spaces/hyphens, Luhn-validated)
-  const ccRegex = /\b(?:\d[ -]?){13,16}\b/g;
-  redacted = redacted.replace(ccRegex, (match) => {
-    const clean = match.replace(/[\s-]/g, "");
-    if (isLuhnValid(clean)) {
-      return "[redacted]";
-    }
-    return match;
-  });
 
-  // 2. IBANs (2 letters + 2 digits + up to 30 alphanumeric characters)
-  const ibanRegex = /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/gi;
-  redacted = redacted.replace(ibanRegex, "[redacted]");
 
-  // 3. Long all-digit sequences (10 or more digits, common for accounts, IDs, phone lists, etc.)
-  const longDigitsRegex = /\b\d{10,}\b/g;
-  redacted = redacted.replace(longDigitsRegex, "[redacted]");
-
-  // 4. API Keys and Sensitive Tokens (OpenAI, Stripe, Github, AWS, or standard headers)
-  // Edit or add patterns here:
-  const tokenPatterns = [
-    /sk-(proj-)?[a-zA-Z0-9]{48,}/g,                        // OpenAI API Keys
-    /rk_live_[a-zA-Z0-9]{24}/g,                             // Stripe restricted keys
-    /sk_live_[a-zA-Z0-9]{24}/g,                             // Stripe secret keys
-    /ghp_[a-zA-Z0-9]{36,}/g,                                // GitHub Personal Access Tokens
-    /AKIA[0-9A-Z]{16}/g,                                    // AWS Access Key ID
-    /\b(?:bearer|token|password|secret|passwd|auth[_-]?token)\s*[:=]\s*["']?[a-zA-Z0-9_\-\.]{16,}["']?/gi // General tokens/passwords in headers
-  ];
-
-  for (const pattern of tokenPatterns) {
-    redacted = redacted.replace(pattern, "[redacted]");
-  }
-
-  return redacted;
-}
-
-function isLuhnValid(str: string): boolean {
-  let sum = 0;
-  let shouldDouble = false;
-  for (let i = str.length - 1; i >= 0; i--) {
-    let digit = parseInt(str.charAt(i), 10);
-    if (shouldDouble) {
-      digit *= 2;
-      if (digit > 9) digit -= 9;
-    }
-    sum += digit;
-    shouldDouble = !shouldDouble;
-  }
-  return sum % 10 === 0;
-}
 
 export const settingsRepo = {
   async getCapturePaused(): Promise<boolean> {
