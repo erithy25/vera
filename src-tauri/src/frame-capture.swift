@@ -560,7 +560,13 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        // Language correction must stay OFF. Vision "corrects" strings it does
+        // not recognise as words — sk-proj-T3xK… becomes something word-like,
+        // and the key stops matching every redaction pattern on both the Rust
+        // and the Swift side. It also corrupts identifiers, file paths and
+        // commands, which are exactly what Vera is meant to remember.
+        // Enforced by src-tauri/core/tests/swift_parity.rs.
+        request.usesLanguageCorrection = false
         do {
             try handler.perform([request])
         } catch {
@@ -691,15 +697,28 @@ func luhnValid(_ s: String) -> Bool {
     return sum % 10 == 0
 }
 
+// BEGIN CANONICAL SECRET PATTERNS
+// Mirrored from src-tauri/core/src/redact.rs — the single source of truth.
+// tests/swift_parity.rs fails the build if these two lists drift apart.
+// Do not edit by hand: change redact.rs, then update this block.
 let secretPatterns: [String] = [
-    "sk-(proj-)?[A-Za-z0-9]{20,}",
-    "rk_live_[A-Za-z0-9]{16,}",
-    "sk_live_[A-Za-z0-9]{16,}",
-    "ghp_[A-Za-z0-9]{36,}",
-    "AKIA[0-9A-Z]{16}",
-    "AIza[0-9A-Za-z\\-_]{20,}",
-    "eyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]*",
-    "\\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\\b",
+    "sk-(proj-)?[A-Za-z0-9_\\-]{20,}",  // openai
+    "sk-ant-(api03-)?[A-Za-z0-9_\\-]{20,}",  // anthropic
+    "rk_(live|test)_[A-Za-z0-9]{16,}",  // stripe_restricted
+    "sk_(live|test)_[A-Za-z0-9]{16,}",  // stripe_secret
+    "gh[pousr]_[A-Za-z0-9]{36,}",  // github
+    "github_pat_[A-Za-z0-9_]{40,}",  // github_fine_grained
+    "(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}",  // aws_access_key
+    "AIza[0-9A-Za-z\\-_]{20,}",  // google_api
+    "xox[baprs]-[A-Za-z0-9\\-]{10,}",  // slack
+    "SG\\.[A-Za-z0-9_\\-]{20,}",  // sendgrid
+    "glpat-[A-Za-z0-9_\\-]{16,}",  // gitlab
+    "npm_[A-Za-z0-9]{30,}",  // npm
+    "eyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]*",  // jwt
+    "\\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\\b",  // iban
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",  // pem_header
+]
+// END CANONICAL SECRET PATTERNS{2}[0-9]{2}[A-Z0-9]{11,30}\\b",
 ]
 
 func matchesRegex(_ s: String, _ pattern: String) -> Bool {

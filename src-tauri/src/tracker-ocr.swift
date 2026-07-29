@@ -180,7 +180,13 @@ Task {
         }
 
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        // Language correction must stay OFF. Vision "corrects" strings it does
+        // not recognise as words — sk-proj-T3xK… becomes something word-like,
+        // and the key stops matching every redaction pattern on both the Rust
+        // and the Swift side. It also corrupts identifiers, file paths and
+        // commands, which are exactly what Vera is meant to remember.
+        // Enforced by src-tauri/core/tests/swift_parity.rs.
+        request.usesLanguageCorrection = false
 
         try requestHandler.perform([request])
 
