@@ -10,7 +10,7 @@ import {
   Loader2,
   FileVideo,
 } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   scanVideo,
@@ -239,7 +239,7 @@ export const Scan: React.FC = () => {
 
   const chooseFile = async () => {
     try {
-      const picked = await open({
+      const picked = await openFileDialog({
         multiple: false,
         directory: false,
         filters: [{ name: "Screen recording", extensions: VIDEO_EXTENSIONS }],

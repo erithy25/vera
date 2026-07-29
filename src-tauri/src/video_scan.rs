@@ -171,8 +171,18 @@ pub async fn scan_video(
     }
     CANCEL_REQUESTED.store(false, Ordering::SeqCst);
 
-    // Whatever happens below, the flag has to come back down.
-    let result = run_scan(&app, file, fps.unwrap_or(1.0));
+    // `run_scan` blocks for as long as the scan takes — minutes, on a long
+    // recording. Running that directly in an async command ties up a runtime
+    // worker for the whole time; the progress events it emits would queue up
+    // behind it and the window would sit frozen on "Opening the file…" until
+    // the scan finished. `spawn_blocking` puts it on a thread meant for this.
+    let file = file.to_path_buf();
+    let fps = fps.unwrap_or(1.0);
+    let result = tauri::async_runtime::spawn_blocking(move || run_scan(&app, &file, fps))
+        .await
+        .unwrap_or_else(|e| Err(format!("the scan stopped unexpectedly: {e}")));
+
+    // Whatever happened above, the flag has to come back down.
     SCAN_ACTIVE.store(false, Ordering::SeqCst);
     result
 }
@@ -381,13 +391,26 @@ pub fn detector_list() -> Vec<DetectorInfo> {
 /// hunts for leaked credentials must not leave frames of your recording lying
 /// around in the temp directory.
 #[tauri::command]
-pub fn scan_frame_preview(
+pub async fn scan_frame_preview(
     app: tauri::AppHandle,
     path: String,
     frame_index: u64,
     fps: Option<f64>,
 ) -> Result<String, String> {
-    let file = Path::new(&path);
+    // Decoding an exact frame out of a long file is not instant. Same reasoning
+    // as `scan_video`: off the runtime worker, onto a blocking thread.
+    tauri::async_runtime::spawn_blocking(move || extract_preview(&app, &path, frame_index, fps))
+        .await
+        .unwrap_or_else(|e| Err(format!("the preview stopped unexpectedly: {e}")))
+}
+
+fn extract_preview(
+    app: &tauri::AppHandle,
+    path: &str,
+    frame_index: u64,
+    fps: Option<f64>,
+) -> Result<String, String> {
+    let file = Path::new(path);
     if !file.is_file() {
         return Err(format!("no file at {path}"));
     }
