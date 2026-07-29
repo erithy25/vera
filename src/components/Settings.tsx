@@ -357,7 +357,7 @@ export const Settings: React.FC = () => {
       return true;
     } catch (err) {
       console.error("Vault unlock failed:", err);
-      window.alert("Aufnahme konnte nicht aktiviert werden (Schlüssel-Tresor): " + errorToMessage(err));
+      window.alert("Could not enable recording (key vault): " + errorToMessage(err));
       return false;
     }
   };
