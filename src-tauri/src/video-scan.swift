@@ -24,12 +24,12 @@
 // 2. **Language correction stays off.** Vision "corrects" strings it cannot
 //    read as words, which turns `sk-proj-T3xK9m` into something word-shaped and
 //    destroys the very thing we are looking for. Enforced by
-//    src-tauri/core/tests/swift_parity.rs.
+//    src-tauri/core/tests/ocr_settings.rs.
 
 import AVFoundation
 import CoreGraphics
+import CoreMedia
 import Foundation
-import ImageIO
 import Vision
 
 // MARK: - Output
@@ -59,7 +59,15 @@ struct Options {
     // Hamming distance over a 64-bit average hash below which two frames count
     // as the same picture. 5 is the value the capture path already uses.
     var hashThreshold: Int = 5
-    var maxWidth: Int = 1600
+    // 0 means "do not scale".
+    //
+    // Downscaling would be faster, and the old live-capture path did it at
+    // 1600px. It is wrong here: the text we are hunting for is small terminal
+    // type, and on a 4K recording, scaling to 1600 is exactly what turns a
+    // legible key into an unreadable smear. Missing a key is the worst outcome
+    // this product has, so full resolution is the default and scaling is
+    // something you have to ask for.
+    var maxWidth: Int = 0
 }
 
 var opts = Options()
@@ -131,7 +139,7 @@ func recognizeText(_ cgImage: CGImage) -> String {
     let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
-    // Must stay false — see the header comment. Enforced by swift_parity.rs.
+    // Must stay false — see the header comment. Enforced by ocr_settings.rs.
     request.usesLanguageCorrection = false
     do {
         try handler.perform([request])
@@ -180,7 +188,12 @@ generator.appliesPreferredTrackTransform = true
 let tolerance = CMTime(seconds: interval / 2.0, preferredTimescale: 600)
 generator.requestedTimeToleranceBefore = tolerance
 generator.requestedTimeToleranceAfter = tolerance
-generator.maximumSize = CGSize(width: opts.maxWidth, height: 0)
+if opts.maxWidth > 0 {
+    // Both dimensions must be set: the image is scaled to *fit inside* this
+    // box with its aspect ratio preserved, so a height of 0 would collapse
+    // every frame to nothing.
+    generator.maximumSize = CGSize(width: opts.maxWidth, height: opts.maxWidth)
+}
 
 var lastHash: UInt64?
 var framesScanned = 0
@@ -203,7 +216,8 @@ for index in 0..<totalFrames {
     // Unchanged picture? Then its text is unchanged too. The caller carries the
     // previous frame's text forward, so a secret that stays on screen still
     // gets the full time range attributed to it.
-    if let hash = averageHash(image), let previous = lastHash,
+    let hash = averageHash(image)
+    if let hash = hash, let previous = lastHash,
        hamming(hash, previous) <= opts.hashThreshold {
         emit([
             "type": "frame",
@@ -213,7 +227,7 @@ for index in 0..<totalFrames {
         ])
         continue
     }
-    if let hash = averageHash(image) { lastHash = hash }
+    if let hash = hash { lastHash = hash }
 
     let text = recognizeText(image)
     framesOcred += 1
