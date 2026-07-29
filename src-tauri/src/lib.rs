@@ -15,7 +15,11 @@ pub struct AppActivity {
     pub window_title: *mut c_char,
 }
 
-#[link(name = "CoreGraphics", kind = "framework")]
+// `kind = "framework"` is rejected outright by rustc on non-Apple targets, which
+// made the whole crate impossible to even type-check anywhere but macOS. The
+// attribute is applied conditionally so `cargo check` runs on any host; the app
+// still only links and runs on macOS.
+#[cfg_attr(target_os = "macos", link(name = "CoreGraphics", kind = "framework"))]
 extern "C" {
     fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
 }
@@ -55,8 +59,6 @@ extern "C" {
 // are thin adapters so the call sites in this file stay unchanged.
 
 use vera_core::{crypto, privacy, redact};
-
-const SYSTEM_PROCESS_BLOCKLIST: &[&str] = privacy::SYSTEM_PROCESS_BLOCKLIST;
 
 fn is_browser(app_name: &str, bundle_id: &str) -> bool {
     privacy::is_browser(app_name, bundle_id)
@@ -2185,6 +2187,9 @@ pub fn run() {
     .expect("error while building Vera")
     .run(|app_handle, event| {
         // Clicking the Dock icon while the window is hidden reopens it.
+        // `RunEvent::Reopen` only exists on macOS, so the arm is gated rather
+        // than the crate being un-checkable elsewhere.
+        #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
             if let Some(window) = app_handle.get_webview_window("main") {
                 let _ = window.show();
@@ -2192,6 +2197,8 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (&app_handle, &event);
     });
 }
 

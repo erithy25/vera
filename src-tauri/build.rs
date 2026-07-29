@@ -1,4 +1,19 @@
 fn main() {
+  // The natives are Objective-C and Swift against Apple frameworks, so they can
+  // only be compiled on macOS. Before this guard, `cargo check` on any other
+  // host panicked here ("Failed to execute swiftc"), which meant none of the
+  // Rust in this crate could be checked by a compiler outside a Mac — the
+  // rebuild was reviewed by hand instead. Skipping the native step lets any
+  // host type-check the crate. It cannot link or run it, and macOS is
+  // unaffected: there the guard is true and every step below runs as before.
+  if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    build_apple_natives();
+  }
+
+  tauri_build::build()
+}
+
+fn build_apple_natives() {
   cc::Build::new()
     .file("src/tracker.m")
     .file("src/vault.m")
@@ -138,5 +153,4 @@ fn main() {
       }
   }
 
-  tauri_build::build()
 }
