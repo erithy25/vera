@@ -2,23 +2,26 @@
 //!
 //! ## Why this module exists
 //!
-//! Before the rebuild, the schema was created in three places:
+//! Before the rebuild the schema was created in three places: the SQL plugin's
+//! migration list, a second `CREATE TABLE` pass in `lib.rs` that reconciled
+//! columns by hand through `PRAGMA table_info`, and a third in `src/lib/db.ts`.
+//! The comment on the second one admitted it outright — *"Idempotent: … so it
+//! never collides with the sql-plugin migration."* You only write that when you
+//! know the structure is wrong. Adding a column meant remembering three places
+//! in two languages, with no test to remind you.
 //!
-//! 1. The SQL plugin's migration list in `lib.rs`
-//! 2. `ensure_frames_schema()` in `lib.rs` — `CREATE TABLE IF NOT EXISTS` plus
-//!    a manual column reconciliation via `PRAGMA table_info`
-//! 3. `src/lib/db.ts` — `CREATE TABLE IF NOT EXISTS` again, plus `checkAndSeed`
-//!    defaults
+//! Every table is declared exactly once here.
 //!
-//! The comment in `lib.rs` admitted it outright: *"Idempotent: … so it never
-//! collides with the sql-plugin migration."* You only write a comment like that
-//! when you know the structure is wrong.
+//! ## What Vera stores now
 //!
-//! Practical consequence: adding a column meant remembering three places in two
-//! languages — with no test to remind you.
+//! Preferences. That is the entire list. The scanner keeps no recordings, no
+//! frames, no OCR text and no findings, so `settings` is the only table it
+//! writes to.
 //!
-//! Every table is declared exactly once here. The Rust side applies them; the
-//! frontend no longer creates any schema.
+//! Migrations 1–5 are the old product's tables and are kept because history is
+//! append-only: an existing install has already applied them, and renumbering
+//! would re-run the wrong statements. Migration 7 removes the ones that held
+//! captured screen content.
 
 /// A schema change. Applied in order; `version` is the running number the SQL
 /// plugin also uses.
@@ -32,8 +35,8 @@ pub struct Migration {
 ///
 /// **Rules that keep this from drifting apart again:**
 /// * Never modify an existing migration — always append a new one.
-/// * Every migration must be re-applicable (`IF NOT EXISTS`), because older
-///   installs already created tables through the old paths.
+/// * Every migration must be re-applicable, because older installs already
+///   created tables through the old paths.
 /// * `version` is strictly ascending with no gaps (enforced by a test).
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -114,64 +117,68 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 6,
         description: "indexes_for_retrieval",
-        // The audit found that retrieval queries run over `LIKE '%…%'` and
-        // `timestamp` ranges without a single index existing — a full table
-        // scan per query as the frame count grows.
-        sql: "CREATE INDEX IF NOT EXISTS idx_frames_timestamp ON frames(timestamp DESC);
-              CREATE INDEX IF NOT EXISTS idx_frames_app ON frames(app);
-              CREATE INDEX IF NOT EXISTS idx_frames_segment ON frames(segment_id);
-              CREATE INDEX IF NOT EXISTS idx_activity_started ON activity_events(started_at DESC);
-              CREATE INDEX IF NOT EXISTS idx_segments_started ON segments(started_at DESC);",
+        sql: "CREATE INDEX IF NOT EXISTS idx_activity_started ON activity_events(started_at DESC);",
     },
-];
-
-/// Columns of the `frames` table in the order they are read.
-/// Frontend and backend share this list.
-pub const FRAME_COLUMNS: &[&str] = &[
-    "id",
-    "timestamp",
-    "app",
-    "window_title",
-    "url",
-    "ocr_text",
-    "segment_id",
-    "frame_index",
-    "thumbnail_path",
-    "embedding",
+    Migration {
+        version: 7,
+        description: "drop_capture_tables",
+        // The only migration that destroys data, and it does so on purpose.
+        //
+        // These four tables held recorded screen content: OCR'd text of
+        // everything that was on screen, frame rows pointing at encrypted video
+        // segments, and an app-by-app history of what was in front. Vera does
+        // not record any of that any more and offers no way to look at it, so
+        // an upgrading user would be left with a permanent, invisible archive
+        // of their own screen inside an app that now promises to store nothing.
+        //
+        // Deleting it is the only honest option. `notes` and `goals` are left
+        // alone: unlike the rest, the user typed those themselves.
+        sql: "DROP TABLE IF EXISTS frames;
+              DROP TABLE IF EXISTS segments;
+              DROP TABLE IF EXISTS captures;
+              DROP TABLE IF EXISTS activity_events;",
+    },
 ];
 
 /// Defaults written on first launch.
 ///
-/// Deliberately **without** `cloud_api_key_*`: since the rebuild, API keys live
-/// in the Keychain, not in the database (audit finding F-1).
-pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
-    ("chat_model", "llama3.2:3b"),
-    ("embedding_model", "nomic-embed-text"),
-    ("cloud_provider", "anthropic"),
-    ("cloud_model_anthropic", "claude-sonnet-4-6"),
-    ("cloud_model_openai", "gpt-4o"),
-    ("frames_capture_enabled", "false"),
-    ("frames_retention_days", "30"),
-    ("capture_paused", "false"),
-];
+/// The old list seeded model names, cloud providers, capture toggles and
+/// retention windows. None of those exist any more.
+pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[("scan_fps", "1")];
 
-/// Setting keys that must never appear in a data export.
-pub const EXPORT_BLOCKLIST_PREFIXES: &[&str] = &["cloud_api_key_"];
+/// Settings written by versions of Vera that no longer exist. Removed at
+/// startup so an old install does not keep a cloud API key — which earlier
+/// releases stored in plaintext here — in a product that makes no network
+/// requests at all.
+pub const OBSOLETE_SETTING_PREFIXES: &[&str] = &[
+    "cloud_api_key_",
+    "cloud_model_",
+    "cloud_provider",
+    "cloud_last_status",
+    "chat_model",
+    "embedding_model",
+    "ai_engine",
+    "frames_",
+    "capture_paused",
+    "excluded_",
+];
 
 pub fn latest_version() -> i64 {
     MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
 }
 
-/// May this setting key be exported?
-pub fn is_exportable_setting(key: &str) -> bool {
-    !EXPORT_BLOCKLIST_PREFIXES
-        .iter()
-        .any(|p| key.starts_with(p))
+/// Should this setting be deleted on startup?
+pub fn is_obsolete_setting(key: &str) -> bool {
+    OBSOLETE_SETTING_PREFIXES.iter().any(|p| key.starts_with(p))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Migrations that are allowed to contain destructive statements, with the
+    /// reason recorded next to the exception.
+    const DESTRUCTIVE_BY_DESIGN: &[&str] = &["drop_capture_tables"];
 
     #[test]
     fn versions_are_contiguous_and_ascending() {
@@ -210,19 +217,64 @@ mod tests {
                         m.description
                     );
                 }
+                if s.starts_with("DROP TABLE") {
+                    assert!(
+                        s.contains("IF EXISTS"),
+                        "migration '{}' would fail on a fresh install:\n{stmt}",
+                        m.description
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn no_migration_drops_or_deletes() {
-        // A DROP inside a migration would destroy user data on rollback. That
-        // must never slip in by accident.
+    fn only_the_declared_migration_destroys_data() {
+        // A DROP that slips in unannounced destroys someone's data on upgrade.
+        // One migration is allowed to, and it is named here explicitly.
         for m in MIGRATIONS {
+            if DESTRUCTIVE_BY_DESIGN.contains(&m.description) {
+                continue;
+            }
             let s = m.sql.to_uppercase();
             assert!(!s.contains("DROP TABLE"), "'{}' contains DROP TABLE", m.description);
             assert!(!s.contains("DELETE FROM"), "'{}' contains DELETE FROM", m.description);
         }
+    }
+
+    #[test]
+    fn the_cleanup_migration_keeps_what_the_user_wrote() {
+        // notes and goals were typed by a person. Capture data was not.
+        let sql = MIGRATIONS
+            .iter()
+            .find(|m| m.description == "drop_capture_tables")
+            .expect("cleanup migration missing")
+            .sql
+            .to_uppercase();
+        for kept in ["NOTES", "GOALS"] {
+            assert!(
+                !sql.contains(&format!("DROP TABLE IF EXISTS {kept}")),
+                "the cleanup migration would delete the user's {kept}"
+            );
+        }
+        for dropped in ["FRAMES", "SEGMENTS", "CAPTURES", "ACTIVITY_EVENTS"] {
+            assert!(
+                sql.contains(&format!("DROP TABLE IF EXISTS {dropped}")),
+                "recorded screen data in {dropped} would survive the upgrade"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_table_survives_the_cleanup() {
+        // It is the only table the product still uses.
+        let sql = MIGRATIONS
+            .iter()
+            .find(|m| m.description == "drop_capture_tables")
+            .unwrap()
+            .sql
+            .to_uppercase();
+        assert!(!sql.contains("DROP TABLE IF EXISTS SETTINGS"));
     }
 
     #[test]
@@ -231,49 +283,29 @@ mod tests {
     }
 
     #[test]
-    fn frames_migration_declares_every_read_column() {
-        let sql = MIGRATIONS
-            .iter()
-            .find(|m| m.description == "frames_and_segments")
-            .expect("frames migration missing")
-            .sql;
-        for col in FRAME_COLUMNS {
-            assert!(
-                sql.contains(col),
-                "column '{col}' is read but never created"
-            );
+    fn api_keys_are_not_seeded_and_are_cleaned_up() {
+        for (k, _) in DEFAULT_SETTINGS {
+            assert!(!k.contains("api_key"), "'{k}' must not be seeded");
         }
+        // Earlier releases wrote cloud keys into this table in plaintext.
+        assert!(is_obsolete_setting("cloud_api_key_anthropic"));
+        assert!(is_obsolete_setting("cloud_api_key_openai"));
     }
 
     #[test]
-    fn api_keys_are_not_seeded_into_the_database() {
-        // Regression guard for audit finding F-1.
+    fn cleanup_does_not_touch_current_settings() {
+        assert!(!is_obsolete_setting("scan_fps"));
+        assert!(!is_obsolete_setting("user_name"));
+    }
+
+    #[test]
+    fn defaults_are_settings_the_app_actually_reads() {
+        // The old defaults named models and providers that no longer exist.
         for (k, _) in DEFAULT_SETTINGS {
             assert!(
-                !k.contains("api_key"),
-                "API key '{k}' belongs in the Keychain, not the database"
+                !is_obsolete_setting(k),
+                "'{k}' is seeded and then immediately deleted as obsolete"
             );
-        }
-    }
-
-    #[test]
-    fn api_keys_can_never_be_exported() {
-        assert!(!is_exportable_setting("cloud_api_key_anthropic"));
-        assert!(!is_exportable_setting("cloud_api_key_openai"));
-        assert!(is_exportable_setting("chat_model"));
-        assert!(is_exportable_setting("frames_retention_days"));
-    }
-
-    #[test]
-    fn retrieval_columns_are_indexed() {
-        // The audit flagged the missing index as the 10x-load problem.
-        let idx = MIGRATIONS
-            .iter()
-            .find(|m| m.description == "indexes_for_retrieval")
-            .expect("index migration missing")
-            .sql;
-        for needed in ["frames(timestamp", "frames(app", "activity_events(started_at"] {
-            assert!(idx.contains(needed), "index on {needed} missing");
         }
     }
 }

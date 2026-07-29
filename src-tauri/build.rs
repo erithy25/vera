@@ -1,156 +1,113 @@
-fn main() {
-  // The natives are Objective-C and Swift against Apple frameworks, so they can
-  // only be compiled on macOS. Before this guard, `cargo check` on any other
-  // host panicked here ("Failed to execute swiftc"), which meant none of the
-  // Rust in this crate could be checked by a compiler outside a Mac — the
-  // rebuild was reviewed by hand instead. Skipping the native step lets any
-  // host type-check the crate. It cannot link or run it, and macOS is
-  // unaffected: there the guard is true and every step below runs as before.
-  if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-    build_apple_natives();
-  }
+// Two Swift sidecars are compiled into `binaries/` and bundled as resources:
+//
+//   video-scan     samples a recording and OCRs the frames (the scanner)
+//   frame-extract  pulls one still out of a file, to show where a finding is
+//
+// The Objective-C natives are gone with the product that needed them. There was
+// a `tracker.m` that polled the frontmost window, a `vault.m` that held an
+// encryption key behind Touch ID, an `ocr-helper` that read the live screen and
+// a `frame-capture` that recorded it continuously. A tool that scans a file you
+// hand it needs none of that, and a tool that looks for leaked credentials has
+// no business running any of it.
 
-  tauri_build::build()
+fn main() {
+    // Swift only compiles on macOS. Before this guard, `cargo check` on any
+    // other host panicked here ("Failed to execute swiftc"), which meant none
+    // of the Rust in this crate could be checked by a compiler outside a Mac —
+    // it was reviewed by hand instead. Skipping the native step lets any host
+    // type-check the crate. It cannot link or run it, and macOS is unaffected:
+    // there the guard is true and every step below runs.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        build_swift_sidecars();
+    } else {
+        write_sidecar_placeholders();
+    }
+
+    tauri_build::build()
 }
 
-fn build_apple_natives() {
-  cc::Build::new()
-    .file("src/tracker.m")
-    .file("src/vault.m")
-    .flag("-fobjc-arc")
-    .compile("tracker");
+/// Sidecars declared as resources in `tauri.conf.json`, in the order they are
+/// built. Each is `<name>.swift` in `src/` and `binaries/<name>` when compiled.
+const SIDECARS: &[&str] = &["video-scan", "frame-extract"];
 
-  println!("cargo:rustc-link-lib=framework=AppKit");
-  println!("cargo:rustc-link-lib=framework=ApplicationServices");
-  println!("cargo:rustc-link-lib=framework=Security");
-  println!("cargo:rustc-link-lib=framework=LocalAuthentication");
-  println!("cargo:rerun-if-changed=src/vault.m");
+/// tauri_build refuses to run if a declared resource is missing. Off macOS the
+/// sidecars were never produced, so the check fails on files that could not
+/// possibly be there. These stubs keep `cargo check` working; they are
+/// git-ignored and never reach a bundle, since a bundle can only be built on
+/// macOS in the first place.
+fn write_sidecar_placeholders() {
+    std::fs::create_dir_all("binaries").expect("failed to create binaries directory");
+    for name in SIDECARS {
+        let path = format!("binaries/{name}");
+        if !std::path::Path::new(&path).exists() {
+            std::fs::write(&path, b"#!/bin/sh\nexit 1\n")
+                .expect("failed to write sidecar placeholder");
+        }
+    }
+}
 
-  // Compile Swift OCR helper at build time
-  let ocr_source = "src/tracker-ocr.swift";
-  let ocr_binary = "binaries/ocr-helper";
+fn build_swift_sidecars() {
+    std::fs::create_dir_all("binaries").expect("failed to create binaries directory");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is not set");
 
-  // Ensure binaries directory exists
-  std::fs::create_dir_all("binaries").expect("failed to create binaries directory");
+    for name in SIDECARS {
+        let source = format!("src/{name}.swift");
+        let binary = format!("binaries/{name}");
 
-  // Copy swift source to cargo OUT_DIR to bypass iCloud sync metadata locks during compilation
-  let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is not set");
-  let temp_source = std::path::Path::new(&out_dir).join("tracker-ocr.swift");
-  std::fs::copy(ocr_source, &temp_source).expect("failed to copy swift source to out_dir");
+        // Compile from a copy in OUT_DIR: building straight out of the source
+        // tree trips over iCloud sync metadata locks.
+        let temp = std::path::Path::new(&out_dir).join(format!("{name}.swift"));
+        std::fs::copy(&source, &temp)
+            .unwrap_or_else(|e| panic!("failed to stage {source}: {e:?}"));
+        println!("cargo:rerun-if-changed={source}");
 
-  println!("cargo:rerun-if-changed={}", ocr_source);
+        println!("Compiling Swift sidecar {name}...");
+        let status = std::process::Command::new("swiftc")
+            .arg("-O")
+            .arg(&temp)
+            .arg("-o")
+            .arg(&binary)
+            .status();
 
-  println!("Compiling Swift OCR helper sidecar at build time...");
-  let status = std::process::Command::new("swiftc")
-      .arg("-O")
-      .arg(&temp_source)
-      .arg("-o")
-      .arg(ocr_binary)
-      .status();
+        match status {
+            Ok(s) if s.success() => println!("Sidecar {name} compiled to {binary}."),
+            Ok(s) => panic!("swiftc failed for {name} with status: {s:?}"),
+            Err(e) => panic!("could not run swiftc for {name}: {e:?}"),
+        }
+    }
 
-  match status {
-      Ok(s) if s.success() => {
-          println!("Swift OCR helper sidecar compiled successfully to {}", ocr_binary);
-      }
-      Ok(s) => {
-          panic!("swiftc compilation failed with status: {:?}", s);
-      }
-      Err(e) => {
-          panic!("Failed to execute swiftc compiler at build time: {:?}", e);
-      }
-  }
+    // Sign the sidecars so the app passes notarization. Tauri signs the main
+    // binary and the .app, but not these extra resource binaries — without a
+    // Developer ID signature carrying a secure timestamp and the hardened
+    // runtime, Apple rejects the notarization. Only runs when a signing
+    // identity is provided (release builds); plain dev builds skip it.
+    println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+    let Ok(identity) = std::env::var("APPLE_SIGNING_IDENTITY") else {
+        return;
+    };
+    let identity = identity.trim().to_string();
+    if identity.is_empty() {
+        return;
+    }
 
-  // Compile the long-lived ScreenCaptureKit frame-capture sidecar.
-  let frame_source = "src/frame-capture.swift";
-  let frame_binary = "binaries/frame-capture";
-  let temp_frame_source = std::path::Path::new(&out_dir).join("frame-capture.swift");
-  std::fs::copy(frame_source, &temp_frame_source)
-      .expect("failed to copy frame-capture swift source to out_dir");
-  println!("cargo:rerun-if-changed={}", frame_source);
-
-  println!("Compiling Swift frame-capture sidecar at build time...");
-  let frame_status = std::process::Command::new("swiftc")
-      .arg("-O")
-      .arg(&temp_frame_source)
-      .arg("-o")
-      .arg(frame_binary)
-      .status();
-
-  match frame_status {
-      Ok(s) if s.success() => {
-          println!("Swift frame-capture sidecar compiled successfully to {}", frame_binary);
-      }
-      Ok(s) => {
-          panic!("swiftc compilation of frame-capture failed with status: {:?}", s);
-      }
-      Err(e) => {
-          panic!("Failed to execute swiftc compiler for frame-capture: {:?}", e);
-      }
-  }
-
-  // Compile the frame-extract helper (time-seek retrieval from HEVC segments).
-  let extract_source = "src/frame-extract.swift";
-  let extract_binary = "binaries/frame-extract";
-  let temp_extract_source = std::path::Path::new(&out_dir).join("frame-extract.swift");
-  std::fs::copy(extract_source, &temp_extract_source)
-      .expect("failed to copy frame-extract swift source to out_dir");
-  println!("cargo:rerun-if-changed={}", extract_source);
-
-  println!("Compiling Swift frame-extract helper at build time...");
-  let extract_status = std::process::Command::new("swiftc")
-      .arg("-O")
-      .arg(&temp_extract_source)
-      .arg("-o")
-      .arg(extract_binary)
-      .status();
-
-  match extract_status {
-      Ok(s) if s.success() => {
-          println!("Swift frame-extract helper compiled successfully to {}", extract_binary);
-      }
-      Ok(s) => {
-          panic!("swiftc compilation of frame-extract failed with status: {:?}", s);
-      }
-      Err(e) => {
-          panic!("Failed to execute swiftc compiler for frame-extract: {:?}", e);
-      }
-  }
-
-  // Sign the bundled sidecars so the app passes notarization. Tauri signs the
-  // main binary and the .app, but not these extra resource binaries — without a
-  // Developer ID signature that has a secure timestamp and the hardened runtime
-  // enabled, Apple rejects notarization. Only runs when a signing identity is
-  // provided (release builds); plain dev builds skip it.
-  println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
-  if let Ok(identity) = std::env::var("APPLE_SIGNING_IDENTITY") {
-      let identity = identity.trim().to_string();
-      if !identity.is_empty() {
-          for sidecar in [ocr_binary, frame_binary, extract_binary] {
-              println!("Signing sidecar {} with Developer ID + hardened runtime...", sidecar);
-              let sign = std::process::Command::new("codesign")
-                  .args([
-                      "--force",
-                      "--timestamp",
-                      "--options",
-                      "runtime",
-                      "--sign",
-                      &identity,
-                      sidecar,
-                  ])
-                  .status();
-              match sign {
-                  Ok(s) if s.success() => {
-                      println!("Sidecar {} signed for notarization.", sidecar);
-                  }
-                  Ok(s) => {
-                      panic!("codesign of {} failed with status: {:?}", sidecar, s);
-                  }
-                  Err(e) => {
-                      panic!("Failed to run codesign for {}: {:?}", sidecar, e);
-                  }
-              }
-          }
-      }
-  }
-
+    for name in SIDECARS {
+        let binary = format!("binaries/{name}");
+        println!("Signing {binary} with Developer ID + hardened runtime...");
+        let sign = std::process::Command::new("codesign")
+            .args([
+                "--force",
+                "--timestamp",
+                "--options",
+                "runtime",
+                "--sign",
+                &identity,
+                &binary,
+            ])
+            .status();
+        match sign {
+            Ok(s) if s.success() => println!("Sidecar {binary} signed for notarization."),
+            Ok(s) => panic!("codesign of {binary} failed with status: {s:?}"),
+            Err(e) => panic!("could not run codesign for {binary}: {e:?}"),
+        }
+    }
 }

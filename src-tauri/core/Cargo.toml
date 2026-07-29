@@ -3,16 +3,16 @@ name = "vera-core"
 version = "0.5.2"
 edition = "2021"
 rust-version = "1.77.2"
-description = "Vera-Kernlogik ohne Tauri-Abhängigkeit — dadurch auf jeder Plattform testbar"
+description = "Vera's OCR-tolerant secret detection engine, testable on any platform"
 license = ""
 
 [lib]
 name = "vera_core"
 path = "src/lib.rs"
 
+# No regex: the engine matches prefixes fuzzily and bodies structurally,
+# because OCR text is too damaged for exact patterns to survive.
 [dependencies]
-regex = "1"
-aes-gcm = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

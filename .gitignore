@@ -42,3 +42,8 @@ src-tauri/target
 
 # Machine-specific cargo target-dir override (do not commit)
 src-tauri/.cargo/config.toml
+
+# Swift sidecars built by build.rs; a non-macOS host only ever writes stubs here.
+src-tauri/binaries/video-scan
+
+src-tauri/binaries/frame-extract
