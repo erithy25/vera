@@ -142,7 +142,88 @@ fn candidates(token: &str, base: usize) -> Vec<(usize, String)> {
     out
 }
 
-/// Every candidate in a text: each token plus its suffixes after `=`/`:`.
+/// Characters that can legitimately sit inside a key or a connection string.
+fn is_secretish(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/' | '+' | '=' | '@')
+}
+
+/// How many space-separated fragments may be glued back into one candidate.
+const MAX_GLUE_SPAN: usize = 6;
+
+/// Rebuilds tokens that OCR tore apart with spaces.
+///
+/// ## Why this exists
+///
+/// Every other part of this engine assumes OCR damages *characters* — `o` read
+/// as `0`, `S` as `5`. It also inserts whitespace, and that is far more
+/// destructive, because whitespace is what the tokenizer splits on. Observed on
+/// a real recording:
+///
+/// ```text
+///   OPENAI_API_KEY=sk- proj - T3xK9mPq2LvR8wZa5NbY c7Hd
+///   DATABASE_URL=postgres: //admin: Hunter2Pass9x@db. internal. acme. dev :5432/orders
+/// ```
+///
+/// Both were missed completely — every fragment on its own is too short and too
+/// unremarkable to match anything. The failure mode is the dangerous one: the
+/// scan finishes, reports frames read, and says the recording is clean.
+///
+/// So runs of adjacent fragments separated by a *single* space, where every
+/// fragment is made only of characters a secret can contain, are offered back
+/// as extra candidates with the spaces removed. They then face exactly the same
+/// prefix, character-set, randomness and negative-filter checks as any other
+/// candidate — gluing widens what is *looked at*, never what is accepted. An
+/// English phrase survives the glue and dies at the randomness check.
+fn glued_candidates(text: &str) -> Vec<(usize, usize, String)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+
+    // Fragments of secret-ish characters, with the gap that follows each.
+    let mut frags: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if is_secretish(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_secretish(chars[i]) {
+                i += 1;
+            }
+            frags.push((start, i));
+        } else {
+            // A newline ends the line; anything else just breaks the fragment.
+            if chars[i] == '\n' {
+                emit_runs(&chars, &frags, &mut out);
+                frags.clear();
+            }
+            i += 1;
+        }
+    }
+    emit_runs(&chars, &frags, &mut out);
+    out
+}
+
+/// Joins neighbouring fragments that are separated by exactly one space.
+fn emit_runs(chars: &[char], frags: &[(usize, usize)], out: &mut Vec<(usize, usize, String)>) {
+    for a in 0..frags.len() {
+        let mut joined: String = chars[frags[a].0..frags[a].1].iter().collect();
+        let mut b = a;
+        while b + 1 < frags.len() && b - a + 1 < MAX_GLUE_SPAN {
+            let gap_start = frags[b].1;
+            let gap_end = frags[b + 1].0;
+            // Exactly one space between them, nothing else.
+            if gap_end - gap_start != 1 || chars[gap_start] != ' ' {
+                break;
+            }
+            b += 1;
+            joined.extend(chars[frags[b].0..frags[b].1].iter());
+            // The span covers the original text, so overlap de-duplication
+            // still lines up with the un-glued findings.
+            out.push((frags[a].0, frags[b].1, joined.clone()));
+        }
+    }
+}
+
+/// Every candidate in a text: each token, its suffixes after `=`/`:`, and the
+/// space-separated runs glued back together.
 ///
 /// Must be used by **all** detectors. A detector that only walks `tokenize()`
 /// stops finding `postgres://…` and `eyJ…` as soon as they sit behind an
@@ -154,6 +235,17 @@ fn all_candidates(text: &str) -> Vec<(usize, usize, String)> {
         for (cand_start, cand) in candidates(&tok, start) {
             let end = cand_start + cand.chars().count();
             out.push((cand_start, end, cand));
+        }
+    }
+    // Glued runs are shorter than the text they came from, so offsets derived
+    // inside them are approximate. They stay within the original span, which is
+    // all the overlap de-duplication needs.
+    for (start, end, glued) in glued_candidates(text) {
+        out.push((start, end, glued.clone()));
+        for (cand_start, cand) in candidates(&glued, start) {
+            if cand_start != start {
+                out.push((cand_start.min(end), end, cand));
+            }
         }
     }
     out
@@ -561,5 +653,71 @@ mod tests {
     fn empty_and_plain_text_yield_nothing() {
         assert!(detect_in_text("").is_empty());
         assert!(detect_in_text("Hello world, this is an ordinary sentence.").is_empty());
+    }
+
+    // ---- Whitespace inserted by OCR ----
+    //
+    // These two strings are verbatim OCR output from a rendered test recording.
+    // Before the glue pass both were missed entirely, which is the worst
+    // failure this product can have: a scan that finishes and says "clean".
+
+    #[test]
+    fn a_key_that_ocr_split_with_spaces_is_still_found() {
+        let ocr = "OPENAT_API_KEY=sk- proj - T3xK9mPq2LvR8wZa5NbY c7Hd";
+        let ids = ids(ocr);
+        assert!(
+            ids.contains(&"openai_project".to_string()),
+            "OCR-inserted spaces hid the key: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_connection_string_that_ocr_split_with_spaces_is_still_found() {
+        let ocr = "DATABASE_URL=postgres: //admin: Hunter2Pass9x@db. internal. acme. dev :5432/orders";
+        let ids = ids(ocr);
+        assert!(ids.contains(&"db_uri".to_string()), "got {ids:?}");
+    }
+
+    #[test]
+    fn gluing_does_not_invent_findings_in_ordinary_text() {
+        // Gluing widens what is looked at, never what is accepted. Prose,
+        // prompts and file listings must stay silent.
+        for line in [
+            "the quick brown fox jumps over the lazy dog",
+            "Welcome to this tutorial about building an API client",
+            "~/dev/acme-api $ npm run build && npm test",
+            "dist/assets/index-Dz8mcTBK.js 259.84 kB gzip: 78.19 kB",
+            "commit a074f80ab12cd34ef56789012345678901234567 (HEAD -> main)",
+            "vite v7.0.4 ready in 412 ms Local: http://127.0.0.1:5173/",
+            "1. Copy the example file: cp .env.example .env",
+            "OPENAI_API_KEY=sk-your-api-key-here",
+            "AWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE",
+            "const apiKey = process.env.OPENAI_API_KEY;",
+        ] {
+            let found = detect_in_text(line);
+            assert!(found.is_empty(), "false alarm on {line:?}: {found:#?}");
+        }
+    }
+
+    #[test]
+    fn gluing_stops_at_a_line_break() {
+        // Halves on separate lines must never become one token. Glued across
+        // the newline these two would read as sk-proj-T3xK9mPq2LvR8wZa5NbYc7Hd
+        // and report a critical OpenAI key that is not on screen anywhere.
+        let found = detect_in_text("prefix sk-\nproj-T3xK9mPq2LvR8wZa5NbYc7Hd extra");
+        assert!(
+            found.is_empty(),
+            "glued a key across a line break: {found:#?}"
+        );
+    }
+
+    #[test]
+    fn gluing_needs_a_single_space_not_a_gap() {
+        // Two columns of a table are not one token.
+        let found = detect_in_text("sk-     proj-     T3xK9mPq2LvR8wZa5NbYc7Hd");
+        assert!(
+            found.iter().all(|f| f.pattern_id != "openai_project"),
+            "glued across a column gap: {found:#?}"
+        );
     }
 }
