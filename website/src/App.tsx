@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 
 /* ===========================================================================
    Vera — marketing site
@@ -19,6 +19,72 @@ import { useState, useEffect } from "react";
 
 const REPO = "erithy25/vera";
 const DMG_PATH = "/downloads/Vera.dmg";
+
+/* --- Motion --------------------------------------------------------------- */
+
+/**
+ * Reveals anything carrying `data-reveal` as it comes into view.
+ *
+ * One observer for the whole page rather than a ref per element: the page is
+ * static, so there is nothing to re-observe, and it keeps the markup down to a
+ * single attribute. Elements are unobserved once shown — a reveal that replayed
+ * on the way back up would turn a quiet page into a nervous one.
+ *
+ * If IntersectionObserver is missing, everything is marked visible at once. The
+ * CSS hides `[data-reveal]` only inside `prefers-reduced-motion: no-preference`,
+ * so with motion reduced this hook has nothing to do either.
+ */
+function useReveal() {
+  useEffect(() => {
+    const els = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+    if (typeof IntersectionObserver === "undefined") {
+      els.forEach((el) => el.classList.add("is-visible"));
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          entry.target.classList.add("is-visible");
+          io.unobserve(entry.target);
+        }
+      },
+      // Fire a little before the element is fully in view, so the movement has
+      // finished by the time it is somewhere you are actually looking.
+      { rootMargin: "0px 0px -10% 0px", threshold: 0.08 }
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+}
+
+/** Stagger helper: `delay(i)` spaces a group out without magic numbers inline. */
+const delay = (i: number, step = 70) =>
+  ({ "--reveal-delay": `${i * step}ms` }) as React.CSSProperties;
+
+/**
+ * Splits a headline so each word can set itself in turn.
+ *
+ * The separating space is a text node *between* the spans, not inside them. A
+ * non-breaking space inside each word looks identical on a wide screen and then
+ * refuses to wrap on a narrow one, pushing the headline straight out of the
+ * card — which is exactly what it did before this was written down.
+ */
+function SetInWords({ text, from = 0 }: { text: string; from?: number }) {
+  const words = text.split(" ");
+  return (
+    <>
+      {words.map((word, i) => (
+        <Fragment key={`${word}-${i}`}>
+          <span className="word" style={{ "--d": `${from + i * 70}ms` } as React.CSSProperties}>
+            {word}
+          </span>
+          {i < words.length - 1 ? " " : null}
+        </Fragment>
+      ))}
+    </>
+  );
+}
 
 /* --- Small marks ---------------------------------------------------------- */
 
@@ -166,7 +232,7 @@ function Nav() {
   return (
     <div className="fixed top-16 md:top-24 left-0 right-0 z-50 flex justify-center px-16 pointer-events-none">
       <nav
-        className={`nav-pill ${onLight ? "nav-pill--onLight" : ""} pointer-events-auto flex items-center gap-16 md:gap-24 pl-20 pr-8 py-8 transition-colors duration-300`}
+        className={`nav-pill fade-in ${onLight ? "nav-pill--onLight" : ""} pointer-events-auto flex items-center gap-16 md:gap-24 pl-20 pr-8 py-8 transition-colors duration-300`}
         aria-label="Main"
       >
         <a
@@ -204,17 +270,40 @@ function Nav() {
 /* --- Hero ----------------------------------------------------------------- */
 
 function Hero() {
+  // The painting drifts at a third of the scroll rate. Written to a CSS custom
+  // property from inside a rAF so the listener never lays out on the scroll
+  // thread, and capped so it can never uncover the bottom edge.
+  const [parallax, setParallax] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setParallax(Math.min(window.scrollY * 0.32, window.innerHeight * 0.3));
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
+
   return (
     <header id="top" className="relative w-full min-h-[92vh] flex items-end overflow-hidden">
-      <picture>
-        <source srcSet="/img/hero-night.webp" type="image/webp" />
-        <img
-          src="/img/hero-night.jpg"
-          alt="A painted night scene: an empty desk chair, a monitor glowing in a dark room, a moonlit city beyond the window."
-          className="absolute inset-0 w-full h-full object-cover"
-          fetchPriority="high"
-        />
-      </picture>
+      <div className="hero-parallax absolute inset-0" style={{ "--parallax": `${parallax}px` } as React.CSSProperties}>
+        <picture>
+          <source srcSet="/img/hero-valley.webp" type="image/webp" />
+          <img
+            src="/img/hero-valley.jpg"
+            alt="A painted twilight landscape: dark hills falling away into a wide valley, a river catching the last light, a distant range under an indigo sky."
+            className="hero-art absolute inset-0 w-full h-full object-cover"
+            fetchPriority="high"
+          />
+        </picture>
+      </div>
       {/* Reading scrim. The painting is dark already; this only steadies the
           contrast under the overlay card. */}
       <div
@@ -224,22 +313,22 @@ function Hero() {
       />
 
       <div className="relative w-full mx-auto max-w-[1200px] px-24 md:px-40 pb-48 md:pb-64">
-        <div className="card-frosted p-32 md:p-48 max-w-[720px]">
-          <span className="font-af text-caption leading-caption tracking-caption font-medium uppercase text-mist">
+        <div className="card-frosted p-32 md:p-48 max-w-[720px] fade-in" style={{ "--d": "60ms" } as React.CSSProperties}>
+          <span className="font-af text-caption leading-caption tracking-caption font-medium uppercase text-mist fade-in" style={{ "--d": "180ms" } as React.CSSProperties}>
             A local tool for macOS
           </span>
 
           <h1 className="display text-heading md:text-display leading-display tracking-display mt-16 text-paper">
-            Don't ship the key.
+            <SetInWords text="Don't ship the key." from={280} />
           </h1>
 
-          <p className="font-af text-subheading leading-subheading tracking-subheading text-mist mt-20 max-w-[560px]">
+          <p className="font-af text-subheading leading-subheading tracking-subheading text-mist mt-20 max-w-[560px] fade-in" style={{ "--d": "500ms" } as React.CSSProperties}>
             Vera reads your finished screen recording and tells you which API keys, tokens
             and passwords are visible in it — with the timestamp of each one. Before you
             publish.
           </p>
 
-          <div className="flex flex-wrap items-center gap-16 mt-32">
+          <div className="flex flex-wrap items-center gap-16 mt-32 fade-in" style={{ "--d": "620ms" } as React.CSSProperties}>
             <DownloadCta tone="onDark" />
             <a href="#how" className="link-ghost text-mist hover:text-paper">
               How it works
@@ -247,7 +336,7 @@ function Hero() {
             </a>
           </div>
 
-          <p className="font-af text-caption leading-caption tracking-caption text-mist mt-24">
+          <p className="font-af text-caption leading-caption tracking-caption text-mist mt-24 fade-in" style={{ "--d": "740ms" } as React.CSSProperties}>
             Free · macOS 12+ · No account · Nothing is uploaded
           </p>
         </div>
@@ -258,25 +347,50 @@ function Hero() {
 
 /* --- Figure 1: why exact matching fails ----------------------------------- */
 
+/**
+ * The key as the reader returns it — with the two wrong characters swapping in
+ * front of you once the figure is on screen.
+ *
+ * The animation is the argument. Reading "5k-pr0j-" next to "sk-proj-" makes
+ * you compare two strings; watching the `s` become a `5` shows you what the
+ * reader did, which is the thing the whole section is trying to say.
+ */
 function DamagedKey() {
-  // The characters Vision actually gets wrong, marked so the eye lands on them.
-  const parts: Array<[string, boolean]> = [
-    ["5", true], ["k", false], ["-", false], ["p", false], ["r", false],
-    ["0", true], ["j", false], ["-", false], ["T", false], ["3", false],
-    ["x", false], ["K", false], ["9", false], ["m", false], ["P", false], ["q", false],
+  // [correct, asRead] — the two Vision actually gets wrong on this string.
+  const parts: Array<[string, string | null]> = [
+    ["s", "5"], ["k", null], ["-", null], ["p", null], ["r", null],
+    ["o", "0"], ["j", null], ["-", null], ["T", null], ["3", null],
+    ["x", null], ["K", null], ["9", null], ["m", null], ["P", null], ["q", null],
   ];
+  let nth = 0;
   return (
     <span className="font-mono text-body-sm">
-      {parts.map(([c, damaged], i) => (
-        <span
-          key={i}
-          className={damaged ? "text-signal-blue" : "text-charcoal"}
-          style={damaged ? { borderBottom: "1px solid var(--color-signal-blue)" } : undefined}
-        >
-          {c}
-        </span>
-      ))}
-      <span className="text-fog">…</span>
+      {parts.map(([clean, damaged], i) => {
+        if (!damaged) {
+          return (
+            <span key={i} className="text-charcoal">
+              {clean}
+            </span>
+          );
+        }
+        const d = 700 + nth++ * 420;
+        return (
+          <span
+            key={i}
+            className="ocr-swap"
+            style={{ "--d": `${d}ms` } as React.CSSProperties}
+          >
+            <span className="ocr-clean text-charcoal">{clean}</span>
+            <span
+              className="ocr-damaged text-signal-blue"
+              style={{ borderBottom: "1px solid var(--color-signal-blue)" }}
+            >
+              {damaged}
+            </span>
+          </span>
+        );
+      })}
+      <span className="text-ash">…</span>
     </span>
   );
 }
@@ -414,8 +528,8 @@ function ScanPreview() {
           <hr className="rule" />
 
           <ul className="flex flex-col gap-16 list-none p-0 m-0">
-            {findings.map((f) => (
-              <li key={f.label} className="flex items-center gap-12">
+            {findings.map((f, i) => (
+              <li key={f.label} className="flex items-center gap-12" data-reveal style={delay(i, 130)}>
                 <span
                   className={`w-8 h-8 rounded-full shrink-0 ${f.strong ? "bg-twilight" : "bg-fog"}`}
                   aria-hidden="true"
@@ -525,11 +639,13 @@ function FaqRow({ q, a }: { q: string; a: string }) {
           </svg>
         </span>
       </button>
-      {open && (
-        <p className="font-af text-body leading-body tracking-body text-ash max-w-[720px] pb-24 m-0">
-          {a}
-        </p>
-      )}
+      <div className={`disclosure ${open ? "is-open" : ""}`}>
+        <div>
+          <p className="font-af text-body leading-body tracking-body text-ash max-w-[720px] pb-24 m-0">
+            {a}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -537,6 +653,8 @@ function FaqRow({ q, a }: { q: string; a: string }) {
 /* --- Page ----------------------------------------------------------------- */
 
 export function App() {
+  useReveal();
+
   // The version actually being served, read from the same manifest the release
   // script writes next to the DMG — so the number here can never drift from
   // the real download.
@@ -559,12 +677,12 @@ export function App() {
         {/* --- The claim, stated plainly ------------------------------------ */}
         <Section id="how">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48">
-            <div className="md:col-span-7">
+            <div className="md:col-span-7" data-reveal>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 A scanner that reads video, not files.
               </h2>
             </div>
-            <div className="md:col-span-5 flex flex-col gap-24">
+            <div className="md:col-span-5 flex flex-col gap-24" data-reveal style={delay(1, 120)}>
               <p className="font-af text-body leading-body tracking-body text-ash m-0">
                 Vera is a small desktop app for people who record their screen — demos,
                 tutorials, bug reports, conference talks. It looks at the finished file the
@@ -581,7 +699,7 @@ export function App() {
 
         {/* --- Editorial statement ------------------------------------------ */}
         <Section surface="paper">
-          <div className="max-w-[860px]">
+          <div className="max-w-[860px]" data-reveal>
             <p className="display text-heading-sm leading-heading-sm tracking-heading-sm m-0">
               We think the last thing standing between you and publishing should never be a
               key you did not see. Not a credential rotated in a hurry, not a video pulled
@@ -596,15 +714,15 @@ export function App() {
 
         {/* --- The four verticals, and the gap ------------------------------ */}
         <Section>
-          <div className="max-w-[860px]">
+          <div className="max-w-[860px]" data-reveal>
             <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
               Secret scanning already works well — nearly everywhere.
             </h2>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-16 mt-48">
-            {VERTICALS.map((v) => (
-              <div key={v.name} className="card p-16 flex flex-col gap-8">
+            {VERTICALS.map((v, i) => (
+              <div key={v.name} className="card p-16 flex flex-col gap-8" data-reveal style={delay(i)}>
                 <span className="font-af text-body-sm font-medium tracking-body-sm text-graphite">
                   {v.name}
                 </span>
@@ -615,7 +733,7 @@ export function App() {
             ))}
           </div>
 
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-48 max-w-[720px] m-0">
+          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-48 max-w-[720px] m-0" data-reveal>
             All of them assume perfect text. A video has none.
           </p>
         </Section>
@@ -623,7 +741,7 @@ export function App() {
         {/* --- Figure 1 ------------------------------------------------------ */}
         <Section surface="paper">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
-            <div className="md:col-span-6 flex flex-col gap-24">
+            <div className="md:col-span-6 flex flex-col gap-24" data-reveal>
               <Eyebrow>The problem</Eyebrow>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 The text was never read correctly.
@@ -644,7 +762,7 @@ export function App() {
               </p>
             </div>
 
-            <div className="md:col-span-6">
+            <div className="md:col-span-6" data-reveal style={delay(1, 140)}>
               <FigureOne />
             </div>
           </div>
@@ -653,7 +771,7 @@ export function App() {
         {/* --- Atmospheric divider ------------------------------------------ */}
         <div className="w-full bg-parchment">
           <div className="mx-auto max-w-[1200px] px-24 md:px-40">
-            <div className="surface-atmospheric relative">
+            <div className="surface-atmospheric relative" data-reveal>
               <picture>
                 <source srcSet="/img/meadow-dusk.webp" type="image/webp" />
                 <img
@@ -680,7 +798,7 @@ export function App() {
         {/* --- The product --------------------------------------------------- */}
         <Section id="finds">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
-            <div className="md:col-span-5 flex flex-col gap-24">
+            <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 Vera tells you exactly where to look.
               </h2>
@@ -698,18 +816,18 @@ export function App() {
               </p>
             </div>
 
-            <div className="md:col-span-7">
+            <div className="md:col-span-7" data-reveal style={delay(1, 140)}>
               <ScanPreview />
             </div>
           </div>
 
           <div className="mt-64">
-            <span className="font-af text-body leading-body tracking-body text-charcoal">
+            <span className="font-af text-body leading-body tracking-body text-charcoal" data-reveal>
               Vera can find things like
             </span>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-16 mt-24">
-              {FINDS.map((f) => (
-                <div key={f.title} className="card p-16 flex flex-col gap-8">
+              {FINDS.map((f, i) => (
+                <div key={f.title} className="card p-16 flex flex-col gap-8" data-reveal style={delay(i, 90)}>
                   <span className="display text-subheading text-graphite">{f.title}</span>
                   <span className="font-af text-caption leading-caption tracking-caption text-ash">
                     {f.body}
@@ -719,7 +837,7 @@ export function App() {
             </div>
           </div>
 
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-64 max-w-[720px] m-0">
+          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-64 max-w-[720px] m-0" data-reveal>
             Everyone checks their code. Almost nobody checks the video.
           </p>
         </Section>
@@ -727,7 +845,7 @@ export function App() {
         {/* --- What it ignores ---------------------------------------------- */}
         <Section surface="paper">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
-            <div className="md:col-span-6 flex flex-col gap-24">
+            <div className="md:col-span-6 flex flex-col gap-24" data-reveal>
               <div className="text-fog">
                 <PixelKey />
               </div>
@@ -741,12 +859,14 @@ export function App() {
               </p>
             </div>
 
-            <div className="md:col-span-6">
+            <div className="md:col-span-6" data-reveal style={delay(1, 140)}>
               <div className="card-diagram">
                 <div className="bg-paper rounded-xl border border-mist p-24 flex flex-wrap gap-8">
-                  {IGNORED.map((s) => (
+                  {IGNORED.map((s, i) => (
                     <span
                       key={s}
+                      data-reveal
+                      style={delay(i, 55)}
                       className="font-mono text-caption text-ash border border-mist rounded-md px-8 py-4"
                     >
                       {s}
@@ -761,7 +881,7 @@ export function App() {
         {/* --- The one saturated moment -------------------------------------- */}
         <div className="w-full bg-parchment">
           <div className="mx-auto max-w-[1200px] px-24 md:px-40">
-            <div className="surface-atmospheric bg-cerulean p-40 md:p-80">
+            <div className="surface-atmospheric bg-cerulean p-40 md:p-80" data-reveal>
               <div className="max-w-[760px] flex flex-col gap-24">
                 <span className="font-af text-caption leading-caption tracking-caption font-medium uppercase text-paper">
                   Local only
@@ -783,12 +903,12 @@ export function App() {
         {/* --- FAQ ------------------------------------------------------------ */}
         <Section id="faq">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48">
-            <div className="md:col-span-4">
+            <div className="md:col-span-4" data-reveal>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 Good to know.
               </h2>
             </div>
-            <div className="md:col-span-8">
+            <div className="md:col-span-8" data-reveal style={delay(1, 120)}>
               <div className="border-t border-mist">
                 {FAQS.map(([q, a]) => (
                   <FaqRow key={q} q={q} a={a} />
@@ -800,7 +920,7 @@ export function App() {
 
         {/* --- Closing invitation --------------------------------------------- */}
         <Section surface="paper">
-          <div className="max-w-[860px] flex flex-col gap-32">
+          <div className="max-w-[860px] flex flex-col gap-32" data-reveal>
             <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
               One minute now, or a rotated key and a re-uploaded video later.
             </h2>
@@ -823,7 +943,7 @@ export function App() {
       {/* --- Footer ---------------------------------------------------------- */}
       <footer className="w-full bg-paper border-t border-mist">
         <div className="mx-auto max-w-[1200px] px-24 md:px-40 py-64">
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm max-w-[720px] m-0">
+          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm max-w-[720px] m-0" data-reveal>
             Vera is a last check, not a promise. Keep the keys off the screen while you
             record — and let it catch the day you forget.
           </p>

@@ -372,6 +372,162 @@ body {
   margin: 0;
 }
 
+/* ---------------------------------------------------------------------------
+   Motion
+   ---------------------------------------------------------------------------
+   The spec's word for this system is that components *whisper*, so nothing
+   here slides far or bounces. Every move is a short rise plus a fade over a
+   slow ease — enough to give the page a sense of being set rather than
+   loaded, never enough to be the thing you notice.
+
+   All of it sits inside `prefers-reduced-motion: no-preference`. That is the
+   safe direction: with motion reduced, or if the media query is unsupported,
+   the declarations below never apply and every element is simply visible.
+   --------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Scroll reveal. `--reveal-delay` staggers items inside a group. */
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(14px);
+    transition:
+      opacity 0.8s cubic-bezier(0.2, 0.6, 0.2, 1),
+      transform 0.8s cubic-bezier(0.2, 0.6, 0.2, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+    will-change: opacity, transform;
+  }
+
+  [data-reveal].is-visible {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Type that sets itself word by word. Used once, on the hero headline —
+     the one place on the page where a beat before reading is welcome. */
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(0.42em);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .word {
+    display: inline-block;
+    animation: rise-in 0.9s cubic-bezier(0.2, 0.6, 0.2, 1) both;
+    animation-delay: var(--d, 0ms);
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .fade-in {
+    animation: fade-in 0.7s ease both;
+    animation-delay: var(--d, 0ms);
+  }
+
+  /* The hero painting settles by a hair as the page opens, and drifts a
+     little slower than the page scrolls. `--parallax` is written by a
+     rAF-throttled scroll listener. */
+  @keyframes settle {
+    from { transform: scale(1.06); }
+    to { transform: scale(1); }
+  }
+
+  .hero-art {
+    animation: settle 1.6s cubic-bezier(0.2, 0.6, 0.2, 1) both;
+  }
+
+  .hero-parallax {
+    transform: translate3d(0, var(--parallax, 0px), 0);
+    will-change: transform;
+  }
+
+  /* Figure 1 tells its story by doing the damage in front of you: the two
+     characters OCR gets wrong swap once the figure is on screen. */
+  .ocr-swap {
+    position: relative;
+    display: inline-block;
+  }
+
+  .ocr-swap > .ocr-damaged {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+  }
+
+  [data-reveal].is-visible .ocr-swap > .ocr-clean {
+    animation: fade-out 0.4s ease both;
+    animation-delay: var(--d, 0ms);
+  }
+
+  [data-reveal].is-visible .ocr-swap > .ocr-damaged {
+    animation: fade-in 0.4s ease both;
+    animation-delay: var(--d, 0ms);
+  }
+
+  @keyframes fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  /* The circled arrow leans towards where it is taking you. */
+  .arrow-circle {
+    transition: transform 0.25s cubic-bezier(0.2, 0.6, 0.2, 1);
+  }
+
+  a:hover > .arrow-circle,
+  button:hover > .arrow-circle {
+    transform: translateX(2px);
+  }
+
+  /* Cards answer to the cursor with the hairline only — the system uses
+     borders where other systems would raise an element. */
+  .card {
+    transition: border-color 0.3s ease;
+  }
+
+  .card:hover {
+    border-color: var(--color-fog);
+  }
+
+  /* A disclosure that opens rather than appears. The 0fr→1fr grid row is the
+     only way to transition to an unknown height without measuring it. */
+  .disclosure {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.42s cubic-bezier(0.2, 0.6, 0.2, 1);
+  }
+
+  .disclosure.is-open {
+    grid-template-rows: 1fr;
+  }
+
+  .disclosure > * {
+    overflow: hidden;
+  }
+}
+
+/* Without the grid transition the answer still has to open and close. */
+.disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+}
+
+.disclosure.is-open {
+  grid-template-rows: 1fr;
+}
+
+.disclosure > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
 /* Visible keyboard focus, in the system's own accent. */
 :where(a, button, input):focus-visible {
   outline: 2px solid var(--color-signal-blue);
