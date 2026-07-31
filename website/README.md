@@ -67,19 +67,62 @@ exactly the inputs the figure can reach and no claim is made beyond them.
 ## The "Download for Mac" button
 
 The button downloads Vera **directly** from this site — no redirect to GitHub.
-It points at `/downloads/Vera.dmg`, which is served from `public/downloads/`.
+It points at `/downloads/Vera.dmg`, served from `public/downloads/`, which is
+committed so Vercel ships it with the site.
 
-You provide that file from your local build:
+### Releasing
+
+One command, from the repo root, on the Mac that holds the signing key:
 
 ```bash
-# from the repo root, after `npm run tauri build`
-cp src-tauri/target/release/bundle/dmg/Vera_*.dmg website/public/downloads/Vera.dmg
-git add website/public/downloads/Vera.dmg && git commit -m "Publish latest Vera DMG"
+npm run release
 ```
 
-The DMG must be **committed** so Vercel serves it with the deployed site. To
-ship a new version, replace that file and commit again — the button always
-serves whatever is at `/downloads/Vera.dmg`.
+It builds, signs, notarizes and updater-signs the app, publishes it into the
+website, commits, pushes to **`main`** (the branch Vercel builds production
+from — a release pushed anywhere else changes nothing a visitor can see), waits
+for the deploy, then downloads the DMG from the live site and compares it byte
+for byte with the one it just built.
+
+It refuses to continue rather than publish something wrong. It stops if:
+
+- the working tree has changes outside the release artifacts
+- the newest DMG is not the version in `tauri.conf.json` — the failure that
+  otherwise ships the *previous* binary under a new version number
+- `spctl` does not report a Notarized Developer ID, which would greet every
+  visitor with "cannot be opened because the developer cannot be verified"
+- the copy into the website does not match what was built
+- `main` has commits the release branch does not
+- the deploy does not appear, or the live bytes are not the built bytes
+
+### Checking a release
+
+```bash
+npm run check:release        # the files in this repo agree with each other
+npm run check:release:live   # …and the live site serves exactly those bytes
+```
+
+The version on the page comes from `updater/latest.json`; the button points at
+`downloads/Vera.dmg`. Nothing connected those two, so a release could update one
+and not the other and the page would confidently offer a version it was not
+handing over. Every release now writes `downloads/Vera.dmg.sha256`, and the
+check compares the manifest version, the version the app was built at, the hash
+beside the file, the hash of the file, and the hash of the bytes the deployed
+site actually returns.
+
+That checksum is also there for anyone who wants to verify their own download:
+
+```bash
+shasum -a 256 -c Vera.dmg.sha256
+```
+
+### Auto-update
+
+`updater/latest.json` is what installed copies poll on launch. It currently
+covers `darwin-aarch64` only — an Intel Mac is offered nothing. The updater
+signing key lives at `~/.tauri/vera-updater.key` and is **not** in the repo:
+losing it means no existing install can ever auto-update again, so the release
+script will not quietly generate a new one.
 
 Note: a browser cannot silently install an app. Clicking downloads the DMG,
 which the user opens and drags into Applications (the standard macOS flow).
