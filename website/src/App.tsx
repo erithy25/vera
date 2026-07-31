@@ -229,7 +229,9 @@ export function App() {
           </p>
           <div className="mt-9 flex flex-col items-center gap-2.5">
             <DownloadButton variant="solid" />
-            <span className="font-sans text-[12px] text-text-faint">Free · macOS 12+ · No account</span>
+            <span className="font-sans text-[12px] text-text-faint">
+              Free · macOS 12+ · No account{publishedVersion ? ` · v${publishedVersion}` : ""}
+            </span>
           </div>
         </section>
 
@@ -327,7 +329,9 @@ export function App() {
             </p>
             <div className="mt-9 flex flex-col items-center gap-2.5">
               <DownloadButton variant="solid" />
-              <span className="font-sans text-[12px] text-text-faint">Free · macOS 12+ · No account</span>
+              <span className="font-sans text-[12px] text-text-faint">
+              Free · macOS 12+ · No account{publishedVersion ? ` · v${publishedVersion}` : ""}
+            </span>
             </div>
           </div>
         </section>
