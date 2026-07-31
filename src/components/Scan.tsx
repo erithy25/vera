@@ -140,7 +140,9 @@ const IncidentRow: React.FC<{ incident: Incident; videoPath: string; fps: number
             )}
           </div>
           <p className="font-sans text-[11px] text-text-faint">
-            This still is rendered from your file on demand and is never written to disk.
+            Decoded from your file the moment you asked for it. It passes through a
+            temporary file that is deleted in the same step, so no copy of this frame
+            outlives the click.
           </p>
         </div>
       )}

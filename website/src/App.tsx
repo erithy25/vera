@@ -110,7 +110,11 @@ function DownloadCta({ tone = "primary" }: { tone?: "primary" | "secondary" | "o
           ? "btn-secondary"
           : "btn-primary";
   return (
-    <a href={DMG_PATH} download className={cls} aria-label="Download Vera for Mac">
+    // No aria-label: the visible text is already the accessible name, and
+    // "Download Vera for Mac" would not contain the visible "Download for Mac",
+    // which is exactly what WCAG 2.5.3 (Label in Name) forbids — voice-control
+    // users say what they read.
+    <a href={DMG_PATH} download className={cls}>
       <AppleMark />
       Download for Mac
       <ArrowCircle />
@@ -459,7 +463,7 @@ const FINDS = [
   { title: "Provider keys", body: "OpenAI, Anthropic, AWS, GitHub, Google, Stripe, Slack, SendGrid, GitLab, npm, Hugging Face, Linear, Figma, Twilio, Supabase." },
   { title: "Private keys", body: "PEM blocks — RSA, OpenSSH, EC, DSA, PGP and PKCS#8. The header alone is enough." },
   { title: "Connection strings", body: "postgres://, mysql://, mongodb://, redis:// and the rest, whenever a password sits in the URL." },
-  { title: "Assigned secrets", body: "PASSWORD=…, api_key: …, Authorization: Bearer … — when the value looks random rather than word-like." },
+  { title: "Assigned secrets", body: "PASSWORD=…, api_key: …, and Authorization: Bearer … — whenever the value looks random rather than word-like." },
 ];
 
 const IGNORED = [
@@ -509,7 +513,7 @@ function FaqRow({ q, a }: { q: string; a: string }) {
         aria-expanded={open}
         className="w-full flex items-start justify-between gap-24 py-24 text-left bg-transparent border-0 cursor-pointer"
       >
-        <span className="display text-heading-sm leading-subheading tracking-subheading md:tracking-heading-sm">
+        <span className="display text-heading-sm leading-heading-sm tracking-heading-sm">
           {q}
         </span>
         <span

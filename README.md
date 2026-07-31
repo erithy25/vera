@@ -29,14 +29,16 @@ It does not record anything itself, and it never uploads your file.
 
 ## What it looks for
 
-Twenty provider key formats — OpenAI, Anthropic, AWS, GitHub, Google, Stripe,
+Provider key formats — OpenAI, Anthropic, AWS, GitHub, Google, Stripe,
 Slack, SendGrid, GitLab, npm, Hugging Face, Linear, Figma, Twilio, Supabase —
 plus four things recognised from context: PEM private-key blocks, database
 connection strings with an embedded password, JSON Web Tokens, and assigned
 secrets such as `PASSWORD=…` or `Authorization: Bearer …`.
 
-The detector list in the app is read from the engine itself, so it is always
-what actually runs.
+The detector list in the app is read from the engine itself — including the
+count — so it is always what actually runs. This README deliberately names no
+number: the last one written here drifted out of date the moment a pattern was
+added.
 
 ## Why not just run gitleaks on a transcript
 

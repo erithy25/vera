@@ -11,6 +11,7 @@ use crate::negative::{structural_rejection, Rejection};
 use crate::ocr::{fuzzy_prefix_match, normalize_unicode, secret_charset_ratio};
 use crate::patterns::{
     Pattern, ASSIGNMENT_KEYWORDS, DB_URI_SCHEMES, PATTERNS, PRIVATE_KEY_HEADERS, Severity,
+    SPACE_SEPARATED_KEYWORDS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -317,16 +318,29 @@ fn detect_assignments(text: &str, out: &mut Vec<Finding>) {
         for kw in ASSIGNMENT_KEYWORDS {
             let Some(kw_pos) = lower.find(kw) else { continue };
 
-            // An assignment character has to follow the keyword.
+            // Normally an assignment character has to follow the keyword.
+            //
+            // Two of these keywords are not written that way in real life. An
+            // auth header reads `Authorization: Bearer <token>` — the value
+            // follows a *space*, and requiring `=` or `:` made the `bearer`
+            // keyword dead code: it could only ever fire on `bearer=…`, which
+            // nobody writes. That silently excluded the single most common way
+            // a token appears on a developer's screen, in Postman, in curl and
+            // in the network tab.
             let after: String = line.chars().skip(kw_pos + kw.chars().count()).collect();
             let trimmed = after.trim_start();
             let sep_len = after.chars().count() - trimmed.chars().count();
             let Some(first) = trimmed.chars().next() else { continue };
-            if !matches!(first, '=' | ':') {
+
+            let space_separated = SPACE_SEPARATED_KEYWORDS.contains(kw) && sep_len > 0;
+            if !matches!(first, '=' | ':') && !space_separated {
                 continue;
             }
+            // With a space the separator is already consumed; with `=` or `:`
+            // one more character has to come off.
+            let skip = if space_separated { 0 } else { 1 };
 
-            let value_raw: String = trimmed.chars().skip(1).collect();
+            let value_raw: String = trimmed.chars().skip(skip).collect();
             let value_trimmed = value_raw.trim_start();
             let lead = value_raw.chars().count() - value_trimmed.chars().count();
             let value: String = value_trimmed
@@ -365,7 +379,7 @@ fn detect_assignments(text: &str, out: &mut Vec<Finding>) {
                 + kw_pos
                 + kw.chars().count()
                 + sep_len
-                + 1
+                + skip
                 + lead;
 
             out.push(Finding {
@@ -709,6 +723,39 @@ mod tests {
             found.is_empty(),
             "glued a key across a line break: {found:#?}"
         );
+    }
+
+    #[test]
+    fn an_auth_header_is_found() {
+        for line in [
+            "Authorization: Bearer T3xK9mPq2LvR8wZa5NbYc7Hd",
+            "Authorization=Bearer T3xK9mPq2LvR8wZa5NbYc7Hd",
+            "Bearer T3xK9mPq2LvR8wZa5NbYc7Hd",
+            "-H \"Authorization: Bearer T3xK9mPq2LvR8wZa5NbYc7Hd\"",
+        ] {
+            assert!(
+                ids(line).contains(&"assignment".to_string()),
+                "auth header not detected: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_bearer_takes_a_space_separator() {
+        // `bearer` accepts a space, so the words that can follow it in ordinary
+        // writing have to stay below the bar — and the bare word `token` is not
+        // in the list at all, which the third line pins down.
+        for line in [
+            "the token was refreshed automatically last night",
+            "Authorization: token T3xK9mPq2LvR8wZa5NbYc7Hd",
+            "Bearer authentication is enabled for this route",
+            "token expired, please sign in again",
+            "your token is stored in the system keychain",
+            "rotate the token before publishing the video",
+        ] {
+            let found = detect_in_text(line);
+            assert!(found.is_empty(), "false alarm on {line:?}: {found:#?}");
+        }
     }
 
     #[test]

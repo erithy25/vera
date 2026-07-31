@@ -162,6 +162,10 @@ export const Settings: React.FC = () => {
             <ul className="flex flex-col gap-1.5 font-sans text-[13px] text-text-muted">
               <li>The recording, or any copy of it.</li>
               <li>The frames it reads — they live in memory and are released.</li>
+              <li>
+                A still you open from a finding passes through a temporary file so it
+                can be decoded, and that file is deleted in the same step.
+              </li>
               <li>The text it reads out of them.</li>
               <li>
                 The secrets it finds. A finding holds the type, the timestamp and a

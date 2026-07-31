@@ -362,6 +362,18 @@ pub const ASSIGNMENT_KEYWORDS: &[&str] = &[
     "secret_key", "secretkey", "encryption_key", "signing_key", "master_key",
 ];
 
+/// Keywords whose value follows a space rather than `=` or `:`.
+///
+/// `Authorization: Bearer <token>` is written this way and no other, which is
+/// why requiring a separator made the `bearer` keyword unreachable.
+///
+/// Exactly one entry, deliberately. Every word added here becomes a word that
+/// can precede a value in ordinary prose, and "bearer" is the only one in the
+/// list above that is never used as a noun on its own. The bare word "token"
+/// was tried and left out: it would also have to be added to
+/// `ASSIGNMENT_KEYWORDS`, and "token <something>" is a phrase people write.
+pub const SPACE_SEPARATED_KEYWORDS: &[&str] = &["bearer"];
+
 /// Database connection strings that can carry a password.
 pub const DB_URI_SCHEMES: &[&str] = &[
     "postgres://", "postgresql://", "mysql://", "mongodb://", "mongodb+srv://",

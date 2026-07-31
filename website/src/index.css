@@ -215,7 +215,9 @@ body {
 }
 
 .btn-primary:hover {
-  background: rgba(65, 161, 207, 0.08);
+  /* Linen, not a tinted Signal Blue: the spec forbids filling a button with
+     #41a1cf at any opacity — the chromatic border is the whole identity. */
+  background: var(--color-linen);
 }
 
 /* Secondary Outlined Button ------------------------------------------------- */
@@ -238,7 +240,7 @@ body {
 }
 
 .btn-secondary:hover {
-  background: rgba(40, 40, 52, 0.05);
+  background: var(--color-linen);
 }
 
 /* On a dark illustration the twilight outline disappears, so the secondary
@@ -249,7 +251,8 @@ body {
 }
 
 .btn-secondary--onDark:hover {
-  background: rgba(255, 255, 255, 0.1);
+  /* Mixed from the token rather than hard-coded, so the wash follows Paper. */
+  background: color-mix(in srgb, var(--color-paper) 12%, transparent);
 }
 
 /* Filled Dark Button -------------------------------------------------------- */
@@ -332,7 +335,7 @@ body {
   background: rgba(18, 20, 28, 0.46);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--color-mist);
 }
 
 /* Atmospheric Illustration Card --------------------------------------------- */
