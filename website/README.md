@@ -70,6 +70,28 @@ The button downloads Vera **directly** from this site — no redirect to GitHub.
 It points at `/downloads/Vera.dmg`, served from `public/downloads/`, which is
 committed so Vercel ships it with the site.
 
+### One-time: signing
+
+Notarization needs a paid Apple Developer Program membership (99 USD/year) and a
+**Developer ID Application** certificate — the one for apps distributed outside
+the App Store. Easiest route to the certificate: Xcode → Settings → Accounts →
+Manage Certificates → **+** → Developer ID Application.
+
+Then:
+
+```bash
+npm run setup:signing
+```
+
+It finds the certificate, reads the Team ID straight out of its name, asks for
+the Apple ID and an app-specific password, **verifies them with Apple**, and
+only then writes `.env.signing` (mode 600, gitignored). Verifying first matters:
+otherwise the first thing that tells you a password is wrong is a build failing
+ten minutes in, at the notarization step.
+
+App-specific password: appleid.apple.com → Sign-In and Security → App-Specific
+Passwords. It is not your normal Apple password, and Apple shows it once.
+
 ### Releasing
 
 One command, from the repo root, on the Mac that holds the signing key:

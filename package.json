@@ -8,6 +8,7 @@
     "build": "npx vite build",
     "preview": "npx vite preview",
     "tauri": "tauri",
+    "setup:signing": "bash scripts/setup-signing.sh",
     "release": "bash scripts/release-mac.sh",
     "check:release": "node scripts/check-release.mjs",
     "check:release:live": "node scripts/check-release.mjs --live"
