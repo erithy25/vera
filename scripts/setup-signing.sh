@@ -26,6 +26,45 @@ if [ -f ".env.signing" ]; then
   [ "$reply" = "y" ] || { echo "Left it alone."; exit 0; }
 fi
 
+# --- 0. The toolchain ------------------------------------------------------
+# The full Xcode app is not needed. The Command Line Tools are: `swiftc` builds
+# Vera's two Swift sidecars, `codesign` signs the result, and `notarytool` is
+# what talks to Apple. Rather than assume which of those a given Command Line
+# Tools version ships, ask this Mac.
+bold "Checking the toolchain"
+tools_missing=0
+for tool in swiftc codesign notarytool; do
+  if path="$(xcrun --find "$tool" 2>/dev/null)" && [ -n "$path" ]; then
+    printf '  %-11s %s\n' "$tool" "$path"
+  else
+    printf '  %-11s \033[31mmissing\033[0m\n' "$tool"
+    tools_missing=1
+  fi
+done
+
+if [ "$tools_missing" = "1" ]; then
+  cat <<'TXT'
+
+  Install Apple's Command Line Tools — about 1 GB, and not the full 10 GB Xcode:
+
+      xcode-select --install
+
+  A dialog appears; let it finish, then run this script again.
+
+  If they are already installed and something is still missing, the developer
+  directory may be pointing at nothing:
+
+      xcode-select -p                       # what is it set to?
+      sudo xcode-select --reset             # back to the Command Line Tools
+
+  Only `notarytool` missing while the rest is there is the one case that does
+  need the full Xcode from the App Store.
+
+TXT
+  exit 1
+fi
+echo "  All present — the full Xcode app is not required."
+
 # --- 1. The certificate ----------------------------------------------------
 bold "Looking for a Developer ID Application certificate"
 
@@ -36,17 +75,28 @@ if [ -z "$identities" ]; then
   None found on this Mac.
 
   This is the certificate Apple issues for apps distributed outside the App
-  Store. It needs a paid Apple Developer Program membership (99 USD a year).
+  Store. It needs a paid Apple Developer Program membership (99 USD a year):
+  https://developer.apple.com/programs/
 
-  1. https://developer.apple.com/programs/  →  Enroll
-  2. Once it is active, open Xcode
-     Settings  →  Accounts  →  add your Apple ID  →  Manage Certificates…
-     →  the "+" at the bottom left  →  Developer ID Application
-  3. Run this script again.
+  Once the membership is active, there are two routes to the certificate. The
+  second one needs no Xcode at all.
 
-  Xcode is the easy route because it makes the private key, the signing request
-  and the download in one step. Doing it by hand on the developer portal works
-  too and is considerably more fiddly.
+  WITH XCODE
+    Settings → Accounts → add your Apple ID → Manage Certificates…
+    → "+" bottom left → Developer ID Application
+
+  WITHOUT XCODE — Keychain Access, which is already on every Mac
+    1. Open Keychain Access
+    2. Menu "Keychain Access" → Certificate Assistant
+       → Request a Certificate From a Certificate Authority…
+    3. Your Apple ID email, your name, choose "Saved to disk", Continue.
+       It writes CertificateSigningRequest.certSigningRequest
+    4. https://developer.apple.com/account/resources/certificates → "+"
+    5. Choose Developer ID Application, upload that file, Continue
+    6. Download the .cer it gives you and double-click it. It installs into
+       the login keychain, next to the private key the assistant just made.
+
+  Then run this script again.
 
 TXT
   exit 1

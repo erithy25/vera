@@ -74,8 +74,25 @@ committed so Vercel ships it with the site.
 
 Notarization needs a paid Apple Developer Program membership (99 USD/year) and a
 **Developer ID Application** certificate — the one for apps distributed outside
-the App Store. Easiest route to the certificate: Xcode → Settings → Accounts →
-Manage Certificates → **+** → Developer ID Application.
+the App Store.
+
+**The full Xcode app is not required.** What is required is Apple's Command Line
+Tools (`xcode-select --install`, about 1 GB): `swiftc` builds Vera's two Swift
+sidecars, `codesign` signs the result, `notarytool` talks to Apple.
+`npm run setup:signing` checks for all three on your Mac and says which is
+missing rather than guessing.
+
+Two routes to the certificate:
+
+- **With Xcode** — Settings → Accounts → Manage Certificates → **+** →
+  Developer ID Application.
+- **Without Xcode** — Keychain Access, which is already installed. Certificate
+  Assistant → *Request a Certificate From a Certificate Authority…* → save to
+  disk. Upload that file at
+  [developer.apple.com/account/resources/certificates](https://developer.apple.com/account/resources/certificates)
+  → **+** → Developer ID Application, download the `.cer`, double-click it.
+
+The setup script prints both routes if it finds no certificate.
 
 Then:
 
