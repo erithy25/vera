@@ -133,16 +133,138 @@ const AppleMark = ({ size = 14 }: { size?: number }) => (
   </svg>
 );
 
-/**
- * A pixel-art key.
+/* --- Pixel marks ----------------------------------------------------------- *
  *
  * The design system keeps one element that deliberately breaks the painted
- * language — in the original it is a low-resolution flower. Here it is the
- * thing the whole product is about, drawn at the resolution a key survives in
- * after a video has been compressed.
+ * language — in the original it is a low-resolution flower. Here it is a small
+ * family of landscape marks drawn at the resolution things survive at after a
+ * video has been compressed, which is the whole subject of the product.
+ *
+ * They are hand-plotted grids rather than pictures: a few hundred bytes each,
+ * no request, no third party, and the colour follows `currentColor` so they
+ * take the palette instead of carrying one of their own. Drawn silhouette
+ * first, because at the size these ship the interior disappears and only the
+ * outline is left.
+ *
+ * `tree` and `treeSmall` are the same subject at two resolutions. That is not
+ * duplication — a pixel sprite is drawn for a size, and the tall drawing
+ * scaled down to a chapter mark would be mud.
  */
-const PixelKey = ({ scale = 6 }: { scale?: number }) => {
-  const rows = [
+const PIXEL_MARKS = {
+  sun: [
+    ".......1.......",
+    "..1....1....1..",
+    "...1.......1...",
+    "...............",
+    "......111......",
+    ".....11111.....",
+    ".11..11111..11.",
+    ".....11111.....",
+    "......111......",
+    "...............",
+    "...1.......1...",
+    "..1....1....1..",
+    ".......1.......",
+  ],
+  ridge: [
+    "...1.......",
+    "..111......",
+    ".11111..1..",
+    "1111111111.",
+    "11111111111",
+    "11111111111",
+  ],
+  fern: [
+    "......1......",
+    ".....111.....",
+    "....1.1.1....",
+    ".....111.....",
+    "...1..1..1...",
+    "....1.1.1....",
+    "..1...1...1..",
+    "...1..1..1...",
+    ".1....1....1.",
+    "..1...1...1..",
+    "1.....1.....1",
+    ".1....1....1.",
+    "..1...1...1..",
+    "...1..1..1...",
+    "......1......",
+    "......1......",
+  ],
+  bird: [
+    "11.........11",
+    "111.......111",
+    ".111.....111.",
+    "..111...111..",
+    "...1111111...",
+    "....11111....",
+    ".....111.....",
+  ],
+  moon: [
+    ".....111.....",
+    "...111.......",
+    "..111........",
+    ".111.........",
+    ".111.........",
+    "111..........",
+    "111..........",
+    "111..........",
+    ".111.........",
+    ".111.........",
+    "..111........",
+    "...111.......",
+    ".....111.....",
+  ],
+  treeSmall: [
+    "....11111....",
+    "..111111111..",
+    ".11111111111.",
+    "1111.1111111.",
+    "1111111111111",
+    ".111111.11111",
+    ".11111111111.",
+    "..111111111..",
+    "...1111111...",
+    ".....111.....",
+    ".....111.....",
+    ".....111.....",
+    ".....111.....",
+    ".....111.....",
+    "....11111....",
+    "..11..111..11",
+  ],
+  tree: [
+    ".......11.111........",
+    "....1.1111111.11.....",
+    "...11111.11111111....",
+    "..1111111111111.11.1.",
+    ".1.11111111111111111.",
+    "1111111.111111111111.",
+    "1.111111111111.11111.",
+    "111111111.1111111111.",
+    ".111111111111111.1111",
+    "11111.11111111111111.",
+    ".111111111111.111111.",
+    "1.11111111111111.11..",
+    "..1111111.111111111..",
+    ".1.11111111111.11....",
+    "...1111111111111.....",
+    ".....1111.11111......",
+    "......111111111......",
+    "........11111........",
+    ".........111.........",
+    ".........111.........",
+    ".........111.........",
+    ".........111.........",
+    ".........111.........",
+    ".........111.........",
+    ".........111.........",
+    "........11111........",
+    ".....1111111111......",
+    "..111..1111111..111..",
+  ],
+  key: [
     "..1111..........",
     ".1....1.........",
     "1......1........",
@@ -153,14 +275,37 @@ const PixelKey = ({ scale = 6 }: { scale?: number }) => {
     "..1..........1..",
     "..1......1.1.1..",
     "..1......1.1.1..",
-  ];
+  ],
+} as const;
+
+type PixelName = keyof typeof PIXEL_MARKS;
+
+/**
+ * One grid, rendered as blocks. `scale` is always a whole number — a fractional
+ * one puts the block edges between device pixels and the whole point of the
+ * thing goes soft.
+ */
+const PixelMark = ({
+  name,
+  scale = 2,
+  className = "",
+}: {
+  name: PixelName;
+  scale?: number;
+  className?: string;
+}) => {
+  const rows = PIXEL_MARKS[name];
+  const w = rows[0].length;
+  const h = rows.length;
   return (
     <svg
-      width={rows[0].length * scale}
-      height={rows.length * scale}
-      viewBox={`0 0 ${rows[0].length} ${rows.length}`}
+      width={w * scale}
+      height={h * scale}
+      viewBox={`0 0 ${w} ${h}`}
       shapeRendering="crispEdges"
+      className={className}
       aria-hidden="true"
+      focusable="false"
     >
       {rows.map((row, y) =>
         row.split("").map((c, x) =>
@@ -227,10 +372,25 @@ const Eyebrow = ({
  * serif against the eyebrow's 13px sans, which is where the hierarchy comes
  * from — not from making it paler, which would have cost the contrast.
  */
-const ChapterMark = ({ n, children }: { n: string; children: React.ReactNode }) => (
+const ChapterMark = ({
+  n,
+  mark,
+  scale = 2,
+  children,
+}: {
+  n: string;
+  mark: PixelName;
+  scale?: number;
+  children: React.ReactNode;
+}) => (
   <span className="chapter-mark">
-    <span className="display text-subheading text-ash leading-none">{n}</span>
-    <Eyebrow>{children}</Eyebrow>
+    <span className="chapter-mark-glyph text-fog">
+      <PixelMark name={mark} scale={scale} />
+    </span>
+    <span className="chapter-mark-text">
+      <span className="display text-subheading text-ash leading-none">{n}</span>
+      <Eyebrow>{children}</Eyebrow>
+    </span>
   </span>
 );
 
@@ -801,7 +961,7 @@ export function App() {
         <Section id="how">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48 items-end">
             <div className="md:col-span-7 flex flex-col gap-24" data-reveal>
-              <ChapterMark n="01">What it is</ChapterMark>
+              <ChapterMark n="01" mark="sun">What it is</ChapterMark>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 A scanner that reads video, not files.
               </h2>
@@ -850,7 +1010,7 @@ export function App() {
         {/* --- 02 · The four verticals --------------------------------------- */}
         <Section surface="linen">
           <div className="max-w-[860px] flex flex-col gap-32" data-reveal>
-            <ChapterMark n="02">The gap</ChapterMark>
+            <ChapterMark n="02" mark="ridge" scale={3}>The gap</ChapterMark>
             <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
               Secret scanning already works well — nearly everywhere.
             </h2>
@@ -887,7 +1047,7 @@ export function App() {
         <Section>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
             <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
-              <ChapterMark n="03">The problem</ChapterMark>
+              <ChapterMark n="03" mark="fern">The problem</ChapterMark>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 The text was never read correctly.
               </h2>
@@ -966,7 +1126,7 @@ export function App() {
         <Section id="finds" surface="linen" seam>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
             <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
-              <ChapterMark n="04">The app</ChapterMark>
+              <ChapterMark n="04" mark="bird" scale={3}>The app</ChapterMark>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 Vera tells you exactly where to look.
               </h2>
@@ -1019,9 +1179,9 @@ export function App() {
         <Section seam>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
             <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
-              <ChapterMark n="05">What it ignores</ChapterMark>
+              <ChapterMark n="05" mark="treeSmall">What it ignores</ChapterMark>
               <div className="plate text-fog">
-                <PixelKey scale={5} />
+                <PixelMark name="key" scale={5} />
               </div>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 And what it stays quiet about.
@@ -1093,7 +1253,7 @@ export function App() {
           <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48">
             <div className="md:col-span-4 rail" data-reveal>
               <div className="flex flex-col gap-24">
-                <ChapterMark n="06">Questions</ChapterMark>
+                <ChapterMark n="06" mark="moon">Questions</ChapterMark>
                 <h2 className="display text-heading leading-heading tracking-heading m-0">
                   Good to know.
                 </h2>
@@ -1145,13 +1305,25 @@ export function App() {
         <div className="band-inner mx-auto max-w-[1200px] px-24 md:px-40 pb-64 md:pb-80">
           <hr className="rule-dark mt-64 md:mt-80" />
 
-          <p
-            className="display display-prose text-heading-sm leading-heading-sm tracking-heading-sm text-paper max-w-[720px] m-0"
-            data-reveal
-          >
-            Vera is a last check, not a promise. Keep the keys off the screen while you
-            record — and let it catch the day you forget.
-          </p>
+          <div className="flex items-end justify-between gap-40">
+            <p
+              className="display display-prose text-heading-sm leading-heading-sm tracking-heading-sm text-paper max-w-[720px] m-0"
+              data-reveal
+            >
+              Vera is a last check, not a promise. Keep the keys off the screen while you
+              record — and let it catch the day you forget.
+            </p>
+            {/* The one pixel mark that gets to be large. Charcoal rather than
+                Fog: on Dusk, Fog reads at 8:1 and would shout across the whole
+                footer, and this is meant to be the thing you notice second. */}
+            <div
+              className="text-charcoal shrink-0 hidden md:block"
+              data-reveal
+              style={delay(1, 200)}
+            >
+              <PixelMark name="tree" scale={5} />
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-32 mt-64">
             <div className="flex flex-col gap-12">

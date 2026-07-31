@@ -565,13 +565,34 @@ body {
   margin: 0;
 }
 
-/* The chapter mark: a Fraunces numeral in Fog beside the existing 13px eyebrow.
-   The page is long enough to be read in chapters, and the numerals say so
-   without adding a word of copy. */
+/* The chapter mark: a pixel ornament, then a Fraunces numeral against the 13px
+   eyebrow. The page is long enough to be read in chapters, and the numerals say
+   so without adding a word of copy.
+
+   Two nested rows rather than one: the numeral and the label share a baseline,
+   which is what makes them look set rather than stacked, and a block ornament
+   has no baseline to share — it centres against the pair instead. */
 .chapter-mark {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-16);
+}
+
+.chapter-mark-text {
   display: flex;
   align-items: baseline;
   gap: var(--spacing-12);
+}
+
+/* A fixed slot for the ornament, so the numerals line up in one column down the
+   page. Each mark has its own width — a ridge is wide, a moon is narrow — and
+   left to themselves they pushed every chapter number to a different indent. */
+.chapter-mark-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  flex-shrink: 0;
 }
 
 /* The FAQ heading rides its list instead of leaving 500px of dead space beneath
