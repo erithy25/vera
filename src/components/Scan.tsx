@@ -301,6 +301,16 @@ export const Scan: React.FC = () => {
         </button>
       )}
 
+      {phase === "idle" && (
+        <p className="font-sans text-[12px] text-text-faint px-1 -mt-2">
+          Have not recorded it yet? A <button
+            onClick={() => window.dispatchEvent(new CustomEvent("vera-go", { detail: "Dry run" }))}
+            className="underline underline-offset-2 hover:text-text-muted transition-colors cursor-pointer"
+          >dry run</button> takes ten seconds and tells you whether the real take will be
+          readable at all.
+        </p>
+      )}
+
       {phase === "scanning" && (
         <div className="card-style p-8 flex flex-col gap-6">
           <div className="flex items-center gap-3">

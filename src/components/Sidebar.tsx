@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   ScanLine,
+  Clapperboard,
   KeyRound,
   Settings,
   ShieldCheck,
@@ -33,6 +34,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, setCurrentView })
     switch (iconName) {
       case "ScanLine":
         return <ScanLine size={18} strokeWidth={1.5} />;
+      case "Clapperboard":
+        return <Clapperboard size={18} strokeWidth={1.5} />;
       case "KeyRound":
         return <KeyRound size={18} strokeWidth={1.5} />;
       case "Settings":

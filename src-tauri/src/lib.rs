@@ -22,7 +22,8 @@
 use tauri::Manager;
 
 /// Scanning a finished recording — Vera's entire job.
-pub mod video_scan;
+pub mod recording;
+mod video_scan;
 
 /// Migrations come from `vera-core` so the schema has exactly one definition.
 /// It used to have three, in two languages: the plugin's migration list, a
@@ -118,7 +119,12 @@ pub fn run() {
             video_scan::cancel_scan,
             video_scan::detector_count,
             video_scan::detector_list,
-            video_scan::scan_frame_preview
+            video_scan::scan_frame_preview,
+            recording::recording_environment,
+            recording::open_screen_recorder,
+            recording::reveal_folder,
+            recording::dry_run_canary,
+            recording::evaluate_recording_plan
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -41,6 +41,7 @@
 
 pub mod detect;
 pub mod entropy;
+pub mod legibility;
 pub mod negative;
 pub mod ocr;
 pub mod patterns;
@@ -48,6 +49,10 @@ pub mod scan;
 pub mod schema;
 
 pub use detect::{detect_in_text, detect_with_report, DetectionReport, Finding, Rejected};
+pub use legibility::{
+    evaluate as evaluate_plan, smallest_safe_export_height, Legibility, PlanVerdict,
+    RecordingPlan, DRY_RUN_CANARY,
+};
 pub use patterns::{Severity, PATTERNS};
 pub use scan::{aggregate, format_timestamp, FrameText, Incident, ScanSummary};
 

@@ -6,6 +6,7 @@ export interface NavItem {
 
 export const navItems: NavItem[] = [
   { label: "Scan", icon: "ScanLine", active: true },
+  { label: "Dry run", icon: "Clapperboard", active: false },
   { label: "Detectors", icon: "KeyRound", active: false },
   { label: "Settings", icon: "Settings", active: false },
 ];

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { Scan } from "./components/Scan";
+import { DryRun } from "./components/DryRun";
 import { Detectors } from "./components/Detectors";
 import { Settings } from "./components/Settings";
 import { UpdateChecker } from "./components/UpdateChecker";
@@ -23,6 +24,17 @@ function App() {
     initializeSettings();
   }, []);
 
+  // One screen can send you to another without either importing the other's
+  // state. Used by Scan's pointer at the dry run.
+  useEffect(() => {
+    const go = (e: Event) => {
+      const view = (e as CustomEvent<string>).detail;
+      if (view) setCurrentView(view);
+    };
+    window.addEventListener("vera-go", go);
+    return () => window.removeEventListener("vera-go", go);
+  }, []);
+
   return (
     <div className="flex w-full min-h-screen bg-bg-warm font-sans text-text-primary">
       <Sidebar currentView={currentView} setCurrentView={setCurrentView} />
@@ -31,7 +43,9 @@ function App() {
         <TopBar />
 
         <main className="w-full flex-1 flex flex-col items-center px-4">
-          {currentView === "Detectors" ? (
+          {currentView === "Dry run" ? (
+            <DryRun />
+          ) : currentView === "Detectors" ? (
             <Detectors />
           ) : currentView === "Settings" ? (
             <Settings />
