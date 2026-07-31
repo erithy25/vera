@@ -1,45 +1,378 @@
 @import "tailwindcss";
 
-/* Vera's design tokens — kept identical to the desktop app */
-@theme {
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-serif: "Newsreader", Georgia, serif;
+/* ---------------------------------------------------------------------------
+   Fonts, self-hosted.
+   ---------------------------------------------------------------------------
+   Both are variable fonts subset to latin, which is everything this site
+   writes: 137 KB for the pair, one request each, and no third party involved
+   in loading a page whose whole argument is that nothing gets sent anywhere.
+   --------------------------------------------------------------------------- */
 
-  --color-bg-warm: #f7f6f3;
-  --color-card-surface: #ffffff;
-  --color-border-hairline: #e6e4dd;
-  --color-text-primary: #1c1c1a;
-  --color-text-muted: #8a8a82;
-  --color-text-faint: #a8a8a0;
-  --color-active-hover: #efede8;
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: url(/fonts/fraunces-var-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url(/fonts/inter-var-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ===========================================================================
+   Vera — design system
+   ---------------------------------------------------------------------------
+   Tokens are taken verbatim from the supplied theme.css. Nothing here is
+   invented: every colour, size, radius and shadow below is one of the given
+   values, and the component classes further down are the components described
+   in DESIGN.md, built from those tokens and nothing else.
+
+   The one deliberate substitution is the two typefaces. The originals
+   ('ppmondwest' and 'af') are licensed fonts we do not have, so the stacks
+   below use the substitutes DESIGN.md itself names — Fraunces for the display
+   serif, Inter for the sans. The token *names* stay unchanged so the design
+   system is intact; dropping in the real font files later means editing these
+   two lines and nothing else.
+   =========================================================================== */
+
+@theme {
+  /* Colors */
+  --color-parchment: #fefffc;
+  --color-paper: #ffffff;
+  --color-linen: #f9faf7;
+  --color-ink-black: #171717;
+  --color-graphite: #2c2c2c;
+  --color-charcoal: #444141;
+  --color-ash: #646464;
+  --color-fog: #b4b8b4;
+  --color-mist: #dee2de;
+  --color-twilight: #282834;
+  --color-dusk: #1f1f29;
+  --color-signal-blue: #41a1cf;
+  --color-cerulean: #0081c0;
+
+  /* Typography */
+  --font-ppmondwest: "Fraunces", ui-serif, Georgia, "Times New Roman", serif;
+  --font-af: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Not a brand face and not a third voice — a plain system stack. Credential
+     strings are the one thing on this site that stop being readable in a
+     proportional font: sk-proj- has to line up character for character. */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Typography — Scale */
+  --text-caption: 13px;
+  --leading-caption: 1.3;
+  --tracking-caption: -0.13px;
+  --text-body-sm: 15px;
+  --leading-body-sm: 1;
+  --tracking-body-sm: -0.15px;
+  --text-subheading: 18px;
+  --leading-subheading: 1.3;
+  --tracking-subheading: -0.18px;
+  --text-heading-sm: 27px;
+  --leading-heading-sm: 1.5;
+  --tracking-heading-sm: -1.08px;
+  --text-heading: 40px;
+  --leading-heading: 1.1;
+  --tracking-heading: -0.8px;
+  --text-heading-lg: 48px;
+  --leading-heading-lg: 1.1;
+  --tracking-heading-lg: -0.96px;
+  --text-display: 54px;
+  --leading-display: 1.1;
+  --tracking-display: -1.08px;
+
+  /* Body copy sits at 16px/1.5 — the pairing DESIGN.md calls for against the
+     1.1 display leading. */
+  --text-body: 16px;
+  --leading-body: 1.5;
+  --tracking-body: -0.16px;
+
+  /* Spacing */
+  --spacing-4: 4px;
+  --spacing-8: 8px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-32: 32px;
+  --spacing-40: 40px;
+  --spacing-48: 48px;
+  --spacing-64: 64px;
+  --spacing-80: 80px;
+
+  /* Border Radius */
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+  --radius-full: 50.496px;
+
+  /* Shadows */
+  --shadow-sm: rgba(0, 0, 0, 0.15) 0px 2px 6px 0px;
+  --shadow-subtle: rgba(0, 0, 0, 0.08) 0px 1px 1px 0px, rgba(0, 0, 0, 0.08) 0px 4px 5px 0px;
+  --shadow-subtle-2: rgb(222, 226, 222) 0px 0px 0px 1px;
+  --shadow-subtle-3: rgba(0, 0, 0, 0.06) 0px 2px 2px 0px, rgba(0, 0, 0, 0.04) 0px 0px 0px 5px;
+  --shadow-sm-2: rgba(0, 0, 0, 0.05) 0px 1px 8px 0px;
+}
+
+/* ---------------------------------------------------------------------------
+   Base
+   --------------------------------------------------------------------------- */
+
+@layer base {
 html {
   scroll-behavior: smooth;
+  background-color: var(--color-parchment);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 body {
   margin: 0;
-  background-color: var(--color-bg-warm);
-  color: var(--color-text-primary);
-  font-family: var(--font-sans);
+  /* Parchment, not pure white — the book-page canvas the system is built on. */
+  background-color: var(--color-parchment);
+  color: var(--color-charcoal);
+  font-family: var(--font-af);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Hairline card, matching the app */
-.card-style {
-  background-color: var(--color-card-surface);
-  border: 1px solid var(--color-border-hairline);
-  border-radius: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+::selection {
+  background: var(--color-mist);
+  color: var(--color-ink-black);
+}
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .card-style:hover {
-    border-color: #d2cfc6;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.05);
-    transform: translateY(-2px);
-  }
+@layer components {
+/* The display serif carries the brand. Weight stays at 400 even at 54px, and
+   ligatures are off, exactly as specified. */
+.display {
+  font-family: var(--font-ppmondwest);
+  font-weight: 400;
+  font-feature-settings: "liga" 0;
+  font-variation-settings: "opsz" 96, "SOFT" 20;
+  /* No colour here on purpose: the serif is graphite on parchment and white
+     over the illustrations, so the colour always comes from a utility. The
+     default below is inherited, not asserted. */
+}
+
+/* ---------------------------------------------------------------------------
+   Components — each one is a component described in DESIGN.md
+   --------------------------------------------------------------------------- */
+
+/* Frosted Navigation Pill --------------------------------------------------- */
+.nav-pill {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 50px;
+  border: 1px solid var(--color-twilight);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Once the page scrolls past the illustration the pill sits on light ground,
+   where a 6 % white wash over white would vanish. */
+.nav-pill--onLight {
+  background: rgba(249, 250, 247, 0.82);
+  border-color: var(--color-mist);
+}
+
+/* Primary Outlined CTA ------------------------------------------------------ */
+/* The chromatic border is the entire visual identity of this button: no fill,
+   no shadow. Signal Blue is never used as a fill anywhere in the system. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--color-signal-blue);
+  color: var(--color-signal-blue);
+  font-family: var(--font-af);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.15px;
+  padding: 5px 12px;
+  text-decoration: none;
+  transition: background-color 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: rgba(65, 161, 207, 0.08);
+}
+
+/* Secondary Outlined Button ------------------------------------------------- */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--color-twilight);
+  color: var(--color-twilight);
+  font-family: var(--font-af);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.15px;
+  padding: 5px 12px;
+  text-decoration: none;
+  transition: background-color 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(40, 40, 52, 0.05);
+}
+
+/* On a dark illustration the twilight outline disappears, so the secondary
+   button inverts to white-on-transparent. */
+.btn-secondary--onDark {
+  border-color: var(--color-mist);
+  color: var(--color-paper);
+}
+
+.btn-secondary--onDark:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Filled Dark Button -------------------------------------------------------- */
+/* The only filled button in the system. Used very sparingly. */
+.btn-filled {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: var(--color-dusk);
+  border: 1px solid var(--color-twilight);
+  color: var(--color-paper);
+  font-family: var(--font-af);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.15px;
+  padding: 8px 16px;
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.btn-filled:hover {
+  opacity: 0.88;
+}
+
+/* Ghost Text Link ----------------------------------------------------------- */
+.link-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-charcoal);
+  font-family: var(--font-af);
+  font-size: 16px;
+  font-weight: 400;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.link-ghost:hover {
+  color: var(--color-twilight);
+}
+
+/* The circled arrow that rides inside CTAs and ghost links. */
+.arrow-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+}
+
+/* White Content Card -------------------------------------------------------- */
+/* The soft green-tinted hairline is the signature edge treatment. */
+.card {
+  background: var(--color-paper);
+  border: 1px solid var(--color-mist);
+  border-radius: 12px;
+  box-shadow: var(--shadow-subtle);
+}
+
+/* Diagram Card -------------------------------------------------------------- */
+.card-diagram {
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm-2);
+  padding: 12px;
+}
+
+/* Frosted Hero Overlay Card ------------------------------------------------- */
+.card-frosted {
+  border-radius: 24px;
+  background: rgba(18, 20, 28, 0.46);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* Atmospheric Illustration Card --------------------------------------------- */
+/* Where colour is allowed to exist. Cerulean is a surface, never a button. */
+.surface-atmospheric {
+  border-radius: 24px;
+  box-shadow: var(--shadow-subtle-3);
+  overflow: hidden;
+}
+
+/* Input Field --------------------------------------------------------------- */
+/* Flat edges, linen fill, a single bottom rule — a paper-form feel. */
+.input-paper {
+  border-radius: 0;
+  background: var(--color-linen);
+  color: var(--color-charcoal);
+  border: none;
+  border-bottom: 1px solid var(--color-charcoal);
+  font-family: var(--font-af);
+  font-size: 15px;
+  padding: 8px 12px;
+  outline: none;
+  width: 100%;
+}
+
+.input-paper::placeholder {
+  color: var(--color-fog);
+}
+
+/* Hairline rule used between editorial blocks. */
+.rule {
+  border: 0;
+  border-top: 1px solid var(--color-mist);
+  margin: 0;
+}
+
+/* Visible keyboard focus, in the system's own accent. */
+:where(a, button, input):focus-visible {
+  outline: 2px solid var(--color-signal-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 }

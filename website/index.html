@@ -8,12 +8,17 @@
       name="description"
       content="Vera reads your finished screen recording and tells you which API keys, tokens and passwords are visible in it, with the timestamp of each one. Local, on your Mac, before you publish."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400&display=swap"
-      rel="stylesheet"
-    />
+    <meta name="theme-color" content="#fefffc" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--
+      Fraunces stands in for the display serif and Inter for the sans — the two
+      substitutes named in the design spec, since the originals are licensed
+      fonts. Both are self-hosted (see index.css), so the page makes no
+      third-party request at all.
+    -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/fraunces-var-latin.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-var-latin.woff2" crossorigin />
+    <link rel="preload" as="image" href="/img/hero-night.webp" />
   </head>
   <body>
     <div id="root"></div>
