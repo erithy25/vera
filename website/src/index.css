@@ -161,15 +161,42 @@ body {
 
 @layer components {
 /* The display serif carries the brand. Weight stays at 400 even at 54px, and
-   ligatures are off, exactly as specified. */
+   ligatures are off, exactly as specified.
+
+   Optical size is left to `auto`, which is the whole point of the axis: the
+   browser sets it from the size the text is actually rendered at, so a 13px
+   label gets the text cut and a 48px headline gets the display cut. It used to
+   be pinned at 96 for every one of them, which set 13px labels and 27px
+   paragraphs in a face drawn for a poster — hairlines thin enough to disappear
+   at reading size, and a fit so tight the word spaces closed up.
+
+   ("SOFT" 20 went with it. Fraunces exposes exactly two axes, opsz and wght;
+   there is no SOFT axis to set, so that declaration had never done anything.) */
 .display {
   font-family: var(--font-ppmondwest);
   font-weight: 400;
   font-feature-settings: "liga" 0;
-  font-variation-settings: "opsz" 96, "SOFT" 20;
+  font-optical-sizing: auto;
   /* No colour here on purpose: the serif is graphite on parchment and white
      over the illustrations, so the colour always comes from a utility. The
      default below is inherited, not asserted. */
+}
+
+/* The hero headline is the one line on the site that should be drawn rather
+   than read, so its optical size is pinned above its point size and keeps the
+   high-contrast face the opening had before. Everywhere else `auto` wins. */
+.display--hero {
+  font-variation-settings: "opsz" 72;
+}
+
+/* A paragraph set in the display serif is still a paragraph. The scale's
+   heading tracking is drawn for one line of 27px, and applying it to sixty
+   words pulls the word spaces shut — the single thing that made the editorial
+   blocks hard to read. Long-form serif keeps the size and the leading and gives
+   the tracking back. */
+.display-prose {
+  letter-spacing: -0.2px;
+  word-spacing: 0.015em;
 }
 
 /* ---------------------------------------------------------------------------
@@ -196,6 +223,10 @@ body {
 /* Primary Outlined CTA ------------------------------------------------------ */
 /* The chromatic border is the entire visual identity of this button: no fill,
    no shadow. Signal Blue is never used as a fill anywhere in the system. */
+/* The label is Graphite, not Signal Blue. #41a1cf on Parchment measures 2.90:1,
+   so the site's primary call to action was the least readable text on the page.
+   The system's own rule resolves it: the chromatic *border* is the identity, so
+   the border and the arrow keep the blue and the word becomes legible. */
 .btn-primary {
   display: inline-flex;
   align-items: center;
@@ -203,7 +234,7 @@ body {
   border-radius: 8px;
   background: transparent;
   border: 1px solid var(--color-signal-blue);
-  color: var(--color-signal-blue);
+  color: var(--color-graphite);
   font-family: var(--font-af);
   font-size: 15px;
   font-weight: 500;
@@ -218,6 +249,10 @@ body {
   /* Linen, not a tinted Signal Blue: the spec forbids filling a button with
      #41a1cf at any opacity — the chromatic border is the whole identity. */
   background: var(--color-linen);
+}
+
+.btn-primary .arrow-circle {
+  color: var(--color-signal-blue);
 }
 
 /* Secondary Outlined Button ------------------------------------------------- */
@@ -322,11 +357,29 @@ body {
 }
 
 /* Diagram Card -------------------------------------------------------------- */
+/* The mat a figure is mounted on. Its 72 % white composites to exactly #ffffff
+   over Paper, so on a white section the mat had no visual existence at all;
+   `--shadow-subtle-2` is the Mist hairline drawn as a ring — defined in the
+   token set and, until now, referenced nowhere — which gives it an edge on any
+   surface without adding a shadow the system forbids. */
 .card-diagram {
   background: rgba(255, 255, 255, 0.72);
   border-radius: 16px;
-  box-shadow: var(--shadow-sm-2);
+  box-shadow: var(--shadow-subtle-2);
   padding: 12px;
+}
+
+/* A specimen plate. The pixel key is the one element that deliberately breaks
+   the painted language, and loose on a white column it read as a stray icon
+   rather than as the exhibit it is. */
+.plate {
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 96px;
+  background: var(--color-paper);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-md);
 }
 
 /* Frosted Hero Overlay Card ------------------------------------------------- */
@@ -363,6 +416,184 @@ body {
 
 .input-paper::placeholder {
   color: var(--color-fog);
+}
+
+/* Surfaces ------------------------------------------------------------------ */
+/*
+   The page used to alternate Parchment (#fefffc) and Paper (#ffffff) from block
+   to block. Measured, that is a step of 0.15 in CIE L* — below the threshold at
+   which anyone can see a difference across a large flat field, which is why six
+   consecutive sections read as one unbroken white column six screens tall.
+
+   Linen is the surface that was already in the palette and was being spent on
+   button hovers. Against Paper it is a step of 1.9 L*: still quiet, but it is
+   warm where Paper is neutral, so it reads as a different material rather than
+   a different brightness. Parchment goes back to being what it is — the ground
+   under the whole document, the colour of an overscroll.
+*/
+.surface-paper { background-color: var(--color-paper); }
+.surface-linen { background-color: var(--color-linen); }
+
+/* Paper grain.
+   A flat digital white is the one thing a painted design language cannot carry,
+   and no amount of layout fixes it. This is a single tile of fractal noise,
+   inline as a data URI — about 300 bytes, no request, and no third party, which
+   the page's whole argument requires. Kept to 4 % so it is felt rather than
+   seen, and scoped to the light surfaces: over a painting it would be dirt. */
+.surface-paper,
+.surface-linen {
+  position: relative;
+}
+
+.surface-paper::before,
+.surface-linen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+.surface-paper > *,
+.surface-linen > * {
+  position: relative;
+}
+
+/* Full-bleed bands ---------------------------------------------------------- */
+/*
+   Nothing below the hero had ever touched the edge of the viewport: every
+   picture and every colour sat inside the same 1200px measure as the text, so
+   the page had no scale contrast at all. A band owns the full width and its own
+   surface; `.band-inner` carries the same measure the sections use, so the type
+   column never moves.
+*/
+.band {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.band-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The band holds its own ground while the image decodes, so a slow connection
+     never flashes white through a dark band. */
+}
+
+.band-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.band-inner {
+  position: relative;
+}
+
+/* Dawn — the light painting, carrying dark text. The mirror of the hero: there
+   the scrim darkens for white type, here it lightens for graphite. Mixed from
+   the Parchment token rather than typed as an rgba, so the wash is the page's
+   own paper and not a new colour.
+
+   The gradient runs down, not across, because that is how the painting runs:
+   measured, it is flat left to right (0.63–0.73 relative luminance across all
+   ten columns) and falls steeply top to bottom (0.95 in the sky, 0.39 in the
+   hills). A left-to-right wash over it therefore fogged the whole canvas evenly
+   and turned an oil painting into a beige gradient. Going with the picture
+   instead, the sky needs almost no help and only the dark ground at the foot
+   gets covered — so the painting is visible and 27px graphite still clears 5:1
+   over the darkest tree in it. */
+.band--dawn { background-color: var(--color-linen); }
+
+.scrim--dawn {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-parchment) 20%, transparent) 0%,
+    color-mix(in srgb, var(--color-parchment) 27%, transparent) 38%,
+    color-mix(in srgb, var(--color-parchment) 58%, transparent) 100%
+  );
+}
+
+/* Dusk — no painting at all. One sentence on a dark ground, which is the page's
+   thesis and the only place it raises its voice. */
+.band--dusk { background-color: var(--color-dusk); }
+
+/* Night — the ground the page ends on. The painting is anchored to the top at
+   its own aspect ratio rather than covering the band, so it is never cropped to
+   a stripe; Dusk fills whatever is left below it and the footer's small print
+   sits on flat colour instead of on a picture. */
+.band--night { background-color: var(--color-dusk); }
+
+.band--night .band-art {
+  inset: 0 0 auto 0;
+  height: auto;
+}
+
+.scrim--night {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-dusk) 24%, transparent) 0%,
+    color-mix(in srgb, var(--color-dusk) 58%, transparent) 44%,
+    var(--color-dusk) 86%
+  );
+}
+
+/* Cerulean — the one saturated surface in the system, now at full width.
+
+   The token is used exactly as supplied. White on #0081c0 measures 4.28:1 and
+   Mist 3.27:1, so both fail AA for normal text and both clear the 3:1 bar for
+   large text — which means the band is legible if and only if nothing on it is
+   under 24px. Since the system already puts every line of 27px and up in the
+   display serif, the fix was a typographic one, not a colour one: the 13px
+   eyebrow became a 27px deck and the 16px paragraph became 27px serif. No
+   darker blue had to be invented. */
+.band--cerulean { background-color: var(--color-cerulean); }
+
+/* A hairline that runs the whole bleed, marking a change of surface. Same 1px
+   Mist as `.rule`; only the width limit is gone. */
+.seam { border-top: 1px solid var(--color-mist); }
+
+/* A rule on a dark ground. Mist would be brighter than the type around it. */
+.rule-dark {
+  border: 0;
+  border-top: 1px solid var(--color-charcoal);
+  margin: 0;
+}
+
+/* The chapter mark: a Fraunces numeral in Fog beside the existing 13px eyebrow.
+   The page is long enough to be read in chapters, and the numerals say so
+   without adding a word of copy. */
+.chapter-mark {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-12);
+}
+
+/* The FAQ heading rides its list instead of leaving 500px of dead space beneath
+   itself. Off below 768px, where heading and list are already stacked. */
+@media (min-width: 768px) {
+  .rail {
+    position: sticky;
+    top: var(--spacing-80);
+    align-self: start;
+  }
+}
+
+/* Full-height hero ---------------------------------------------------------- */
+/* The painting has to reach the bottom of the first screen. At 92vh it stopped
+   72px short and the top edge of the next section showed as a pale bar under
+   the artwork — the one thing you see before you have read a word.
+   `dvh` tracks the viewport as mobile browser chrome comes and goes; the `vh`
+   line above it is the fallback for anything that does not know the unit, and
+   has to stay first. */
+.hero-full {
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* Hairline rule used between editorial blocks. */

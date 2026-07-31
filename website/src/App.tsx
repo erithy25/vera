@@ -15,6 +15,13 @@ import { Fragment, useState, useEffect } from "react";
        heading of 27px and up
      · one blue, used as a border and never as a fill
      · a 1px #dee2de hairline is the signature edge — not a shadow
+
+   The page is read in two registers. Light blocks alternate Paper and Linen and
+   hold the argument; five full-bleed bands — dawn, dusk, meadow, cerulean,
+   nightfall — hold the pictures and the raised voice. Parchment is no longer a
+   section surface: against Paper it is a step of 0.15 L*, which nobody can see,
+   and six of them in a row were the reason the page below the hero read as one
+   unbroken white column.
    =========================================================================== */
 
 const REPO = "erithy25/vera";
@@ -190,41 +197,150 @@ function DownloadCta({ tone = "primary" }: { tone?: "primary" | "secondary" | "o
 
 /* --- Reusable editorial pieces -------------------------------------------- */
 
-const Eyebrow = ({ children }: { children: React.ReactNode }) => (
-  <span className="font-af text-caption leading-caption tracking-caption font-medium uppercase text-ash">
+/**
+ * `tone` is not decoration, it is the contrast budget. Ash is right on Paper and
+ * measures 2.8:1 on Dusk; Mist is right on Dusk and measures 4.1:1 on Cerulean,
+ * which is the one surface saturated enough that only pure white clears AA at
+ * 13px.
+ */
+const Eyebrow = ({
+  children,
+  tone = "light",
+}: {
+  children: React.ReactNode;
+  tone?: "light" | "dark" | "onColor";
+}) => (
+  <span
+    className={`font-af text-caption leading-caption tracking-caption font-medium uppercase ${
+      tone === "onColor" ? "text-paper" : tone === "dark" ? "text-mist" : "text-ash"
+    }`}
+  >
     {children}
   </span>
 );
 
+/**
+ * A numbered chapter mark.
+ *
+ * The page is six screens long and every block used to open the same way, so
+ * there was nothing to tell you where you were in it. The numeral is set in the
+ * serif against the eyebrow's 13px sans, which is where the hierarchy comes
+ * from — not from making it paler, which would have cost the contrast.
+ */
+const ChapterMark = ({ n, children }: { n: string; children: React.ReactNode }) => (
+  <span className="chapter-mark">
+    <span className="display text-subheading text-ash leading-none">{n}</span>
+    <Eyebrow>{children}</Eyebrow>
+  </span>
+);
+
+/**
+ * A light block: the argument, on one of the two readable surfaces.
+ *
+ * Paper and Linen alternate down the page. Parchment is deliberately not an
+ * option — it differs from Paper by 0.15 L*, so alternating the two produced a
+ * page with no rhythm at all.
+ */
 const Section = ({
   id,
-  surface = "parchment",
+  surface = "paper",
+  seam = false,
   children,
 }: {
   id?: string;
-  surface?: "parchment" | "paper";
+  surface?: "paper" | "linen";
+  seam?: boolean;
   children: React.ReactNode;
 }) => (
   <section
     id={id}
-    className={`w-full scroll-mt-80 ${surface === "paper" ? "bg-paper" : "bg-parchment"}`}
+    className={`w-full scroll-mt-80 ${surface === "linen" ? "surface-linen" : "surface-paper"} ${
+      seam ? "seam" : ""
+    }`}
   >
     <div className="mx-auto max-w-[1200px] px-24 md:px-40 py-64 md:py-80">{children}</div>
   </section>
 );
 
+/**
+ * A full-bleed band: the page's own width, its own surface, and — where there
+ * is one — a painting behind the text.
+ *
+ * `data-dark` marks the bands the navigation pill has to invert over. Note that
+ * `data-reveal` is never put on the band itself: a 14px rise on an element that
+ * owns a surface opens a visible seam against the block above it for the whole
+ * 800ms of the transition. The reveal goes on the text inside.
+ */
+function Band({
+  id,
+  tone,
+  art,
+  alt,
+  className = "",
+  innerClassName = "",
+  children,
+}: {
+  id?: string;
+  tone: "dawn" | "dusk" | "night" | "cerulean";
+  art?: { webp: string; jpg: string };
+  alt?: string;
+  className?: string;
+  innerClassName?: string;
+  children: React.ReactNode;
+}) {
+  const dark = tone !== "dawn";
+  return (
+    <section
+      id={id}
+      {...(dark ? { "data-dark": "" } : {})}
+      className={`band band--${tone} w-full scroll-mt-80 ${className}`}
+    >
+      {art ? (
+        <>
+          <picture>
+            <source srcSet={art.webp} type="image/webp" />
+            <img src={art.jpg} alt={alt ?? ""} className="band-art" loading="lazy" />
+          </picture>
+          <div aria-hidden="true" className={`band-scrim scrim--${tone}`} />
+        </>
+      ) : null}
+      <div className={`band-inner mx-auto max-w-[1200px] px-24 md:px-40 py-64 md:py-80 ${innerClassName}`}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
 /* --- Navigation ----------------------------------------------------------- */
 
 function Nav() {
-  // Over the painted hero the pill is a true frosted panel; once the page
-  // scrolls onto parchment, a 6 % white wash over white would disappear, so it
-  // takes on the linen fill and the mist hairline instead.
+  // The pill has to invert over the hero and over four more dark bands further
+  // down. A single scroll threshold could only ever get the first of them right,
+  // so the state is read from whatever is actually underneath the pill.
   const [onLight, setOnLight] = useState(false);
   useEffect(() => {
-    const onScroll = () => setOnLight(window.scrollY > window.innerHeight * 0.72);
-    onScroll();
+    const PROBE_Y = 48; // inside the pill's own band, a little below the top edge
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      let dark = false;
+      document.querySelectorAll<HTMLElement>("[data-dark]").forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.top <= PROBE_Y && r.bottom >= PROBE_Y) dark = true;
+      });
+      setOnLight(!dark);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+    measure();
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    window.addEventListener("resize", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
 
   const linkTone = onLight ? "text-charcoal hover:text-twilight" : "text-mist hover:text-paper";
@@ -292,7 +408,7 @@ function Hero() {
   }, []);
 
   return (
-    <header id="top" className="relative w-full min-h-[92vh] flex items-end overflow-hidden">
+    <header id="top" data-dark className="hero-full relative w-full flex items-end overflow-hidden">
       <div className="hero-parallax absolute inset-0" style={{ "--parallax": `${parallax}px` } as React.CSSProperties}>
         <picture>
           <source srcSet="/img/hero-valley.webp" type="image/webp" />
@@ -318,7 +434,7 @@ function Hero() {
             A local tool for macOS
           </span>
 
-          <h1 className="display text-heading md:text-display leading-display tracking-display mt-16 text-paper">
+          <h1 className="display display--hero text-heading md:text-display leading-display tracking-display mt-16 text-paper">
             <SetInWords text="Don't ship the key." from={280} />
           </h1>
 
@@ -354,6 +470,10 @@ function Hero() {
  * The animation is the argument. Reading "5k-pr0j-" next to "sk-proj-" makes
  * you compare two strings; watching the `s` become a `5` shows you what the
  * reader did, which is the thing the whole section is trying to say.
+ *
+ * The changed character stays Charcoal and it is the *rule* under it that is
+ * Signal Blue. Setting the character itself in #41a1cf put the one piece of
+ * text the figure exists to show you at 2.9:1.
  */
 function DamagedKey() {
   // [correct, asRead] — the two Vision actually gets wrong on this string.
@@ -382,7 +502,7 @@ function DamagedKey() {
           >
             <span className="ocr-clean text-charcoal">{clean}</span>
             <span
-              className="ocr-damaged text-signal-blue"
+              className="ocr-damaged text-charcoal"
               style={{ borderBottom: "1px solid var(--color-signal-blue)" }}
             >
               {damaged}
@@ -442,7 +562,7 @@ function FigureOne() {
                   Vera, split in two
                 </span>
                 <div className="flex flex-wrap items-center gap-8">
-                  <span className="font-mono text-caption px-8 py-4 rounded-md border border-signal-blue text-signal-blue">
+                  <span className="font-mono text-caption px-8 py-4 rounded-md border border-signal-blue text-charcoal">
                     5k-pr0j-
                   </span>
                   <span className="font-af text-caption leading-caption tracking-caption text-ash">
@@ -618,16 +738,19 @@ const FAQS: Array<[string, string]> = [
   ],
 ];
 
-function FaqRow({ q, a }: { q: string; a: string }) {
+function FaqRow({ q, a, n }: { q: string; a: string; n: number }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b border-mist">
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="w-full flex items-start justify-between gap-24 py-24 text-left bg-transparent border-0 cursor-pointer"
+        className="w-full flex items-start gap-16 md:gap-24 py-24 text-left bg-transparent border-0 cursor-pointer"
       >
-        <span className="display text-heading-sm leading-heading-sm tracking-heading-sm">
+        <span className="font-af text-caption leading-caption tracking-caption text-ash mt-12 shrink-0 w-24 hidden sm:block" aria-hidden="true">
+          {String(n).padStart(2, "0")}
+        </span>
+        <span className="display text-heading-sm leading-heading-sm tracking-heading-sm flex-1">
           {q}
         </span>
         <span
@@ -641,7 +764,7 @@ function FaqRow({ q, a }: { q: string; a: string }) {
       </button>
       <div className={`disclosure ${open ? "is-open" : ""}`}>
         <div>
-          <p className="font-af text-body leading-body tracking-body text-ash max-w-[720px] pb-24 m-0">
+          <p className="font-af text-body leading-body tracking-body text-ash max-w-[720px] pb-24 sm:pl-48 m-0">
             {a}
           </p>
         </div>
@@ -674,10 +797,11 @@ export function App() {
       <Hero />
 
       <main className="flex-1">
-        {/* --- The claim, stated plainly ------------------------------------ */}
+        {/* --- 01 · The claim, stated plainly -------------------------------- */}
         <Section id="how">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48">
-            <div className="md:col-span-7" data-reveal>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48 items-end">
+            <div className="md:col-span-7 flex flex-col gap-24" data-reveal>
+              <ChapterMark n="01">What it is</ChapterMark>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 A scanner that reads video, not files.
               </h2>
@@ -697,24 +821,36 @@ export function App() {
           </div>
         </Section>
 
-        {/* --- Editorial statement ------------------------------------------ */}
-        <Section surface="paper">
-          <div className="max-w-[860px]" data-reveal>
-            <p className="display text-heading-sm leading-heading-sm tracking-heading-sm m-0">
+        {/* --- Dawn: the editorial statement, on the light painting ---------- */}
+        {/* The tonal opposite of the hero and the only place on the page where
+            dark type sits on a picture. */}
+        <Band
+          tone="dawn"
+          art={{ webp: "/img/dawn-upland.webp", jpg: "/img/dawn-upland.jpg" }}
+          alt="A painted upland at first light: pale gold sky, mist lying in the folds of green-grey hills, a thin road curving away."
+          innerClassName="md:py-[128px]"
+        >
+          <div className="max-w-[640px]" data-reveal>
+            <p className="display display-prose text-heading-sm md:text-heading leading-heading-sm md:leading-heading tracking-heading-sm md:tracking-heading text-graphite m-0">
               We think the last thing standing between you and publishing should never be a
               key you did not see. Not a credential rotated in a hurry, not a video pulled
               back down, not an apology in the replies.
             </p>
-            <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-ash mt-32 m-0">
+            <p
+              className="display display-prose text-heading-sm leading-heading-sm tracking-heading-sm text-charcoal mt-32 m-0"
+              data-reveal
+              style={delay(1, 160)}
+            >
               Where checking a recording before it goes out is as ordinary as reading a
               draft back to yourself.
             </p>
           </div>
-        </Section>
+        </Band>
 
-        {/* --- The four verticals, and the gap ------------------------------ */}
-        <Section>
-          <div className="max-w-[860px]" data-reveal>
+        {/* --- 02 · The four verticals --------------------------------------- */}
+        <Section surface="linen">
+          <div className="max-w-[860px] flex flex-col gap-32" data-reveal>
+            <ChapterMark n="02">The gap</ChapterMark>
             <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
               Secret scanning already works well — nearly everywhere.
             </h2>
@@ -732,17 +868,26 @@ export function App() {
               </div>
             ))}
           </div>
-
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-48 max-w-[720px] m-0" data-reveal>
-            All of them assume perfect text. A video has none.
-          </p>
         </Section>
 
-        {/* --- Figure 1 ------------------------------------------------------ */}
-        <Section surface="paper">
+        {/* --- Dusk: the thesis, alone on a dark ground ---------------------- */}
+        {/* Lifted out of the block above, where it was a closing line nobody
+            reached. It is the sentence the entire product rests on, so it gets a
+            screen and no picture to compete with. */}
+        <Band tone="dusk" innerClassName="md:py-[112px]">
+          <p
+            className="display text-heading md:text-display leading-display tracking-display text-paper max-w-[900px] m-0"
+            data-reveal
+          >
+            All of them assume perfect text. A video has none.
+          </p>
+        </Band>
+
+        {/* --- 03 · Figure 1 ------------------------------------------------- */}
+        <Section>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
-            <div className="md:col-span-6 flex flex-col gap-24" data-reveal>
-              <Eyebrow>The problem</Eyebrow>
+            <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
+              <ChapterMark n="03">The problem</ChapterMark>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 The text was never read correctly.
               </h2>
@@ -762,32 +907,54 @@ export function App() {
               </p>
             </div>
 
-            <div className="md:col-span-6" data-reveal style={delay(1, 140)}>
+            <div className="md:col-start-7 md:col-span-6" data-reveal style={delay(1, 140)}>
               <FigureOne />
             </div>
           </div>
         </Section>
 
-        {/* --- Atmospheric divider ------------------------------------------ */}
-        <div className="w-full bg-parchment">
-          <div className="mx-auto max-w-[1200px] px-24 md:px-40">
-            <div className="surface-atmospheric relative" data-reveal>
+        {/* --- The meadow: the page's one framed picture --------------------- */}
+        {/* Kept inset, with the 24px radius and the halo, while everything else
+            went full-bleed. `.surface-atmospheric` is a component of the system,
+            and one deliberate frame among four bleeds reads as a choice. */}
+        <div className="w-full surface-paper">
+          <div className="mx-auto max-w-[1200px] px-24 md:px-40 pb-64 md:pb-80">
+            {/* Deliberately not `data-dark`: the navigation pill passes over the
+                brightest part of this painting, where white nav links measure
+                3.7:1. The light pill reads cleanly on it instead. */}
+            <div className="surface-atmospheric relative">
               <picture>
                 <source srcSet="/img/meadow-dusk.webp" type="image/webp" />
                 <img
                   src="/img/meadow-dusk.jpg"
                   alt="A painted meadow at dusk, golden poppies against a deep blue sky."
-                  className="w-full h-[280px] md:h-[420px] object-cover block"
+                  className="w-full h-[400px] md:h-[520px] object-cover block"
+                  style={{ objectPosition: "50% 30%" }}
                   loading="lazy"
                 />
               </picture>
+              {/* The wash runs down, not across, because the picture does: the
+                  burning horizon sits in the top third and the grass at the foot
+                  is nearly black. A left-to-right wash left the end of the line
+                  over bare poppies. Bottom-weighted, with the line down in the
+                  grass and the sky left open above it, the same sentence sits on
+                  the darkest part of the painting. */}
               <div
                 aria-hidden="true"
                 className="absolute inset-0"
-                style={{ background: "linear-gradient(to right, rgba(10,12,18,0.62) 0%, rgba(10,12,18,0.12) 62%)" }}
+                style={{
+                  background:
+                    "linear-gradient(to bottom, color-mix(in srgb, var(--color-dusk) 6%, transparent) 0%, color-mix(in srgb, var(--color-dusk) 22%, transparent) 46%, color-mix(in srgb, var(--color-dusk) 62%, transparent) 100%)",
+                }}
               />
-              <div className="absolute inset-0 flex items-center">
-                <p className="display text-heading-sm md:text-heading leading-heading tracking-heading text-paper max-w-[560px] px-32 md:px-64 m-0">
+              <div className="absolute inset-0 flex items-end">
+                <p
+                  // 27px on a phone, not 40px: at 40px on a 342px measure this
+                  // sentence runs five lines and fills the painting edge to
+                  // edge, leaving nothing of the picture to see.
+                  className="display text-heading-sm md:text-heading-lg leading-heading tracking-heading text-paper max-w-[620px] px-32 md:px-64 pb-32 md:pb-48 m-0"
+                  data-reveal
+                >
                   You get one shot at publishing something for the first time.
                 </p>
               </div>
@@ -795,10 +962,11 @@ export function App() {
           </div>
         </div>
 
-        {/* --- The product --------------------------------------------------- */}
-        <Section id="finds">
+        {/* --- 04 · The product ---------------------------------------------- */}
+        <Section id="finds" surface="linen" seam>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
             <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
+              <ChapterMark n="04">The app</ChapterMark>
               <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
                 Vera tells you exactly where to look.
               </h2>
@@ -822,14 +990,16 @@ export function App() {
           </div>
 
           <div className="mt-64">
-            <span className="font-af text-body leading-body tracking-body text-charcoal" data-reveal>
-              Vera can find things like
-            </span>
+            <div data-reveal>
+              <Eyebrow>Vera can find things like</Eyebrow>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-16 mt-24">
               {FINDS.map((f, i) => (
                 <div key={f.title} className="card p-16 flex flex-col gap-8" data-reveal style={delay(i, 90)}>
                   <span className="display text-subheading text-graphite">{f.title}</span>
-                  <span className="font-af text-caption leading-caption tracking-caption text-ash">
+                  {/* Not the 13px caption these were set in: they are real
+                      sentences, one of them listing fifteen provider names. */}
+                  <span className="font-af text-body-sm leading-body tracking-body-sm text-ash">
                     {f.body}
                   </span>
                 </div>
@@ -837,17 +1007,21 @@ export function App() {
             </div>
           </div>
 
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm text-graphite mt-64 max-w-[720px] m-0" data-reveal>
+          <p
+            className="display display-prose text-heading-sm md:text-heading leading-heading-sm md:leading-heading tracking-heading-sm md:tracking-heading text-graphite mt-64 md:mt-80 max-w-[820px] m-0"
+            data-reveal
+          >
             Everyone checks their code. Almost nobody checks the video.
           </p>
         </Section>
 
-        {/* --- What it ignores ---------------------------------------------- */}
-        <Section surface="paper">
+        {/* --- 05 · What it ignores ------------------------------------------ */}
+        <Section seam>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-40 md:gap-48 items-start">
-            <div className="md:col-span-6 flex flex-col gap-24" data-reveal>
-              <div className="text-fog">
-                <PixelKey />
+            <div className="md:col-span-5 flex flex-col gap-24" data-reveal>
+              <ChapterMark n="05">What it ignores</ChapterMark>
+              <div className="plate text-fog">
+                <PixelKey scale={5} />
               </div>
               <h2 className="display text-heading leading-heading tracking-heading m-0">
                 And what it stays quiet about.
@@ -859,7 +1033,7 @@ export function App() {
               </p>
             </div>
 
-            <div className="md:col-span-6" data-reveal style={delay(1, 140)}>
+            <div className="md:col-start-7 md:col-span-6" data-reveal style={delay(1, 140)}>
               <div className="card-diagram">
                 <div className="bg-paper rounded-xl border border-mist p-24 flex flex-wrap gap-8">
                   {IGNORED.map((s, i) => (
@@ -878,118 +1052,149 @@ export function App() {
           </div>
         </Section>
 
-        {/* --- The one saturated moment -------------------------------------- */}
-        <div className="w-full bg-parchment">
-          <div className="mx-auto max-w-[1200px] px-24 md:px-40">
-            <div className="surface-atmospheric bg-cerulean p-40 md:p-80" data-reveal>
-              <div className="max-w-[760px] flex flex-col gap-24">
-                <span className="font-af text-caption leading-caption tracking-caption font-medium uppercase text-paper">
-                  Local only
-                </span>
-                <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg text-paper m-0">
-                  Your recording never leaves your Mac.
-                </h2>
-                <p className="font-af text-body leading-body tracking-body text-paper m-0">
-                  No upload, no account, no server, no telemetry. Nothing is stored either —
-                  not the recording, not the frames, not the text read out of them, not even
-                  the findings. A tool that hunts for your credentials is the last one that
-                  should keep a copy of them.
-                </p>
-              </div>
-            </div>
+        {/* --- The one saturated moment, at full width ----------------------- */}
+        {/* The paragraph is set in the display serif at 27px rather than 16px
+            Inter. White on Cerulean measures 4.28:1 — under AA for body copy and
+            over it for large text — so the size is doing accessibility work as
+            well as typographic work. */}
+        <Band tone="cerulean" innerClassName="md:py-[112px]">
+          <div className="max-w-[860px] flex flex-col gap-24">
+            {/* A deck rather than an eyebrow. At 13px no colour in the palette
+                clears AA on Cerulean; at 27px the 3:1 large-text bar applies and
+                Mist clears it, so the size is doing the accessibility work. */}
+            <p
+              className="display text-heading-sm leading-heading-sm tracking-heading-sm text-mist m-0"
+              data-reveal
+            >
+              Local only.
+            </p>
+            <h2
+              className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg text-paper m-0"
+              data-reveal
+              style={delay(1, 100)}
+            >
+              Your recording never leaves your Mac.
+            </h2>
+            <p
+              className="display display-prose text-heading-sm leading-heading-sm tracking-heading-sm text-paper max-w-[860px] m-0"
+              data-reveal
+              style={delay(2, 100)}
+            >
+              No upload, no account, no server, no telemetry. Nothing is stored either —
+              not the recording, not the frames, not the text read out of them, not even
+              the findings. A tool that hunts for your credentials is the last one that
+              should keep a copy of them.
+            </p>
           </div>
-        </div>
+        </Band>
 
-        {/* --- FAQ ------------------------------------------------------------ */}
-        <Section id="faq">
+        {/* --- 06 · FAQ ------------------------------------------------------ */}
+        <Section id="faq" surface="linen">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-32 md:gap-48">
-            <div className="md:col-span-4" data-reveal>
-              <h2 className="display text-heading leading-heading tracking-heading m-0">
-                Good to know.
-              </h2>
+            <div className="md:col-span-4 rail" data-reveal>
+              <div className="flex flex-col gap-24">
+                <ChapterMark n="06">Questions</ChapterMark>
+                <h2 className="display text-heading leading-heading tracking-heading m-0">
+                  Good to know.
+                </h2>
+              </div>
             </div>
             <div className="md:col-span-8" data-reveal style={delay(1, 120)}>
               <div className="border-t border-mist">
-                {FAQS.map(([q, a]) => (
-                  <FaqRow key={q} q={q} a={a} />
+                {FAQS.map(([q, a], i) => (
+                  <FaqRow key={q} q={q} a={a} n={i + 1} />
                 ))}
               </div>
             </div>
           </div>
         </Section>
-
-        {/* --- Closing invitation --------------------------------------------- */}
-        <Section surface="paper">
+        {/* --- Nightfall: the closing invitation ----------------------------- */}
+        {/* The page opens on twilight and ends on night. The painting is anchored
+            to the top of the band at its own aspect ratio and Dusk fills the rest,
+            so the footer's small print below sits on flat colour, not a picture.
+            The invitation and the footer are two elements on one continuous
+            ground rather than one element, because a <footer> nested inside a
+            <section> stops being the page's contentinfo landmark. */}
+        <Band
+          tone="night"
+          art={{ webp: "/img/nightfall.webp", jpg: "/img/nightfall.jpg" }}
+          alt="A painted nightfall: a long low ridge under a deep indigo sky, the last violet light on the horizon, a still lake holding a few scattered lights."
+          innerClassName="md:pt-[120px] pb-0 md:pb-0"
+        >
           <div className="max-w-[860px] flex flex-col gap-32" data-reveal>
-            <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg m-0">
+            <h2 className="display text-heading md:text-heading-lg leading-heading-lg tracking-heading-lg text-paper m-0">
               One minute now, or a rotated key and a re-uploaded video later.
             </h2>
             <div className="flex flex-wrap items-center gap-16">
-              <DownloadCta />
+              <DownloadCta tone="onDark" />
               <a
                 href={`https://github.com/${REPO}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="link-ghost"
+                className="link-ghost text-mist hover:text-paper"
               >
                 Read the source
                 <ArrowCircle />
               </a>
             </div>
           </div>
-        </Section>
+        </Band>
       </main>
 
-      {/* --- Footer ---------------------------------------------------------- */}
-      <footer className="w-full bg-paper border-t border-mist">
-        <div className="mx-auto max-w-[1200px] px-24 md:px-40 py-64">
-          <p className="display text-heading-sm leading-heading-sm tracking-heading-sm max-w-[720px] m-0" data-reveal>
+      <footer data-dark className="band band--night w-full">
+        <div className="band-inner mx-auto max-w-[1200px] px-24 md:px-40 pb-64 md:pb-80">
+          <hr className="rule-dark mt-64 md:mt-80" />
+
+          <p
+            className="display display-prose text-heading-sm leading-heading-sm tracking-heading-sm text-paper max-w-[720px] m-0"
+            data-reveal
+          >
             Vera is a last check, not a promise. Keep the keys off the screen while you
             record — and let it catch the day you forget.
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-32 mt-64">
             <div className="flex flex-col gap-12">
-              <div className="flex items-center gap-8 text-twilight">
+              <div className="flex items-center gap-8 text-paper">
                 <SunMark size={16} />
                 <span className="display text-subheading">Vera</span>
               </div>
-              <span className="font-af text-caption leading-caption tracking-caption text-ash">
+              <span className="font-af text-caption leading-caption tracking-caption text-mist">
                 Finds the API keys left visible in your screen recordings. Made for macOS.
               </span>
             </div>
 
             <div className="flex flex-col gap-12">
-              <Eyebrow>Product</Eyebrow>
+              <Eyebrow tone="dark">Product</Eyebrow>
               {[
                 ["How it works", "#how"],
                 ["What it finds", "#finds"],
                 ["Questions", "#faq"],
               ].map(([label, href]) => (
-                <a key={href} href={href} className="font-af text-caption leading-caption tracking-caption text-ash hover:text-twilight no-underline transition-colors">
+                <a key={href} href={href} className="font-af text-caption leading-caption tracking-caption text-mist hover:text-paper no-underline transition-colors">
                   {label}
                 </a>
               ))}
             </div>
 
             <div className="flex flex-col gap-12">
-              <Eyebrow>More</Eyebrow>
-              <a href={DMG_PATH} download className="font-af text-caption leading-caption tracking-caption text-ash hover:text-twilight no-underline transition-colors">
+              <Eyebrow tone="dark">More</Eyebrow>
+              <a href={DMG_PATH} download className="font-af text-caption leading-caption tracking-caption text-mist hover:text-paper no-underline transition-colors">
                 Download
               </a>
               <a
                 href={`https://github.com/${REPO}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-af text-caption leading-caption tracking-caption text-ash hover:text-twilight no-underline transition-colors"
+                className="font-af text-caption leading-caption tracking-caption text-mist hover:text-paper no-underline transition-colors"
               >
                 GitHub
               </a>
             </div>
           </div>
 
-          <hr className="rule mt-48" />
-          <span className="block font-af text-caption leading-caption tracking-caption text-ash pt-24">
+          <hr className="rule-dark mt-48" />
+          <span className="block font-af text-caption leading-caption tracking-caption text-mist pt-24">
             © {new Date().getFullYear()} Vera · Recording scanner for macOS
             {publishedVersion ? ` · v${publishedVersion}` : ""}
           </span>
