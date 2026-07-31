@@ -1,4 +1,5 @@
 import { Fragment, useState, useEffect } from "react";
+import { ReaderLab } from "./ReaderLab";
 
 /* ===========================================================================
    Vera — marketing site
@@ -103,18 +104,6 @@ const ArrowCircle = () => (
       <path d="M3.6 2.5H7.5V6.4" />
     </svg>
   </span>
-);
-
-const CrossMark = () => (
-  <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
-    <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
-  </svg>
-);
-
-const CheckMark = () => (
-  <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M2 6.4l2.8 2.8L10 3.4" />
-  </svg>
 );
 
 /** Sun over a landscape — the one glyph in the navigation. */
@@ -621,133 +610,6 @@ function Hero() {
   );
 }
 
-/* --- Figure 1: why exact matching fails ----------------------------------- */
-
-/**
- * The key as the reader returns it — with the two wrong characters swapping in
- * front of you once the figure is on screen.
- *
- * The animation is the argument. Reading "5k-pr0j-" next to "sk-proj-" makes
- * you compare two strings; watching the `s` become a `5` shows you what the
- * reader did, which is the thing the whole section is trying to say.
- *
- * The changed character stays Charcoal and it is the *rule* under it that is
- * Signal Blue. Setting the character itself in #41a1cf put the one piece of
- * text the figure exists to show you at 2.9:1.
- */
-function DamagedKey() {
-  // [correct, asRead] — the two Vision actually gets wrong on this string.
-  const parts: Array<[string, string | null]> = [
-    ["s", "5"], ["k", null], ["-", null], ["p", null], ["r", null],
-    ["o", "0"], ["j", null], ["-", null], ["T", null], ["3", null],
-    ["x", null], ["K", null], ["9", null], ["m", null], ["P", null], ["q", null],
-  ];
-  let nth = 0;
-  return (
-    <span className="font-mono text-body-sm">
-      {parts.map(([clean, damaged], i) => {
-        if (!damaged) {
-          return (
-            <span key={i} className="text-charcoal">
-              {clean}
-            </span>
-          );
-        }
-        const d = 700 + nth++ * 420;
-        return (
-          <span
-            key={i}
-            className="ocr-swap"
-            style={{ "--d": `${d}ms` } as React.CSSProperties}
-          >
-            <span className="ocr-clean text-charcoal">{clean}</span>
-            <span
-              className="ocr-damaged text-charcoal"
-              style={{ borderBottom: "1px solid var(--color-signal-blue)" }}
-            >
-              {damaged}
-            </span>
-          </span>
-        );
-      })}
-      <span className="text-ash">…</span>
-    </span>
-  );
-}
-
-function FigureOne() {
-  return (
-    <figure className="card-diagram m-0">
-      <div className="bg-paper rounded-xl border border-mist p-24 md:p-32">
-        <div className="flex flex-col gap-24">
-          <div className="flex flex-col gap-8">
-            <Eyebrow>On screen</Eyebrow>
-            <span className="font-mono text-body-sm text-charcoal">sk-proj-T3xK9mPq…</span>
-          </div>
-
-          <div className="flex items-center gap-12" aria-hidden="true">
-            <svg width="12" height="26" viewBox="0 0 12 26" fill="none" stroke="var(--color-fog)" strokeWidth="1">
-              <path d="M6 0v20" />
-              <path d="M2 16l4 4 4-4" />
-            </svg>
-            <span className="font-af text-caption leading-caption tracking-caption text-ash">
-              read back out of the video
-            </span>
-          </div>
-
-          <div className="flex flex-col gap-8">
-            <Eyebrow>What the reader returns</Eyebrow>
-            <DamagedKey />
-          </div>
-
-          <hr className="rule" />
-
-          <div className="flex flex-col gap-16">
-            <div className="flex items-start gap-12">
-              <span className="text-ash mt-4 shrink-0" aria-hidden="true"><CrossMark /></span>
-              <div className="flex flex-col gap-4">
-                <span className="font-af text-body-sm font-medium tracking-body-sm text-graphite">
-                  An exact pattern
-                </span>
-                <span className="font-af text-caption leading-caption tracking-caption text-ash">
-                  Two characters are wrong. Nothing matches. Nothing is reported.
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-12">
-              <span className="text-signal-blue mt-4 shrink-0" aria-hidden="true"><CheckMark /></span>
-              <div className="flex flex-col gap-8">
-                <span className="font-af text-body-sm font-medium tracking-body-sm text-graphite">
-                  Vera, split in two
-                </span>
-                <div className="flex flex-wrap items-center gap-8">
-                  <span className="font-mono text-caption px-8 py-4 rounded-md border border-signal-blue text-charcoal">
-                    5k-pr0j-
-                  </span>
-                  <span className="font-af text-caption leading-caption tracking-caption text-ash">
-                    matched loosely
-                  </span>
-                  <span className="font-mono text-caption px-8 py-4 rounded-md border border-mist text-charcoal">
-                    T3xK9mPq…
-                  </span>
-                  <span className="font-af text-caption leading-caption tracking-caption text-ash">
-                    length, character set, randomness — never matched exactly
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <figcaption className="font-af text-caption leading-caption tracking-caption text-ash px-12 pt-12">
-        Figure 1 — A misread character changes neither the length nor the composition of
-        the body. That is why the key is still found.
-      </figcaption>
-    </figure>
-  );
-}
-
 /* --- Product preview ------------------------------------------------------ */
 
 /**
@@ -1068,7 +930,7 @@ export function App() {
             </div>
 
             <div className="md:col-start-7 md:col-span-6" data-reveal style={delay(1, 140)}>
-              <FigureOne />
+              <ReaderLab />
             </div>
           </div>
         </Section>

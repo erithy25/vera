@@ -28,6 +28,42 @@ The site is a standard Vite app, so Vercel detects it automatically.
    output directory `dist` (both auto-filled).
 4. Deploy.
 
+## Figure 1 is not a mock-up — and there is a check that keeps it honest
+
+The interactive figure in *The problem* lets a visitor turn a video frame away
+from the camera until the reader starts making mistakes, and shows live whether
+an exact pattern and Vera each still find the key. **Every answer it gives is
+computed, not scripted.** `src/reader.ts` is a port of the engine's own gates —
+the confusion table and fuzzy prefix from `ocr.rs`, the randomness score from
+`entropy.rs`, and the length/character-set/randomness gate from `detect.rs`.
+
+A second copy of a rule is a copy that drifts, so the port is pinned to the real
+engine over the *entire* space of strings the figure can produce — not a sample:
+
+```bash
+cd website
+node --experimental-strip-types scripts/check-reader.mjs
+```
+
+That compares the port against `scripts/reader.oracle.tsv`, which is the real
+Rust engine's verdict on every one of those strings. Regenerate the ground truth
+whenever the engine changes:
+
+```bash
+cd website
+node --experimental-strip-types scripts/reader-corpus.mjs \
+  | (cd ../src-tauri/core && cargo run -q --example reader_oracle) \
+  > scripts/reader.oracle.tsv
+```
+
+If the check fails, the site is about to claim something the product does not
+do. Fix the port, or the figure, before shipping.
+
+**Scope.** The port covers the pattern path for one pattern, the OpenAI project
+key — the only thing the figure evaluates. It does not port the assignment, PEM
+or connection-string detectors, nor the negative filters. The check is run over
+exactly the inputs the figure can reach and no claim is made beyond them.
+
 ## The "Download for Mac" button
 
 The button downloads Vera **directly** from this site — no redirect to GitHub.

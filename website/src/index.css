@@ -461,6 +461,147 @@ body {
   position: relative;
 }
 
+/* Figure 1 — the operable reader --------------------------------------------- */
+/*
+   A frame from a recording, in perspective, that can be turned away from the
+   camera until its glyphs run out of pixels. The type inside is rendered at the
+   size the model reports, so what the picture shows and what the readout claims
+   cannot drift apart.
+*/
+.reader-scene {
+  position: relative;
+  perspective: 900px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 16px 0 26px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  /* `pan-y`, not `none`: a finger dragged sideways turns the frame, and a
+     finger dragged down still scrolls the page. Taking the vertical gesture as
+     well would trap anyone who happens to start a scroll on top of it. */
+  touch-action: pan-y;
+}
+
+.reader-scene.is-dragging {
+  cursor: grabbing;
+}
+
+.reader-frame {
+  width: 340px;
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  background: var(--color-dusk);
+  border: 1px solid var(--color-twilight);
+  overflow: hidden;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.reader-frame-bar {
+  display: flex;
+  gap: 5px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--color-twilight);
+}
+
+.reader-frame-bar > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-charcoal);
+}
+
+.reader-frame-body {
+  font-family: var(--font-mono);
+  /* The one number the whole demonstration turns on. Matches BASELINE_PX. */
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--color-mist);
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.reader-prompt {
+  color: var(--color-fog);
+}
+
+.reader-hint {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+/* A misread character. The rule underneath carries the mark, not the colour of
+   the glyph — the text stays Charcoal so it keeps its contrast. */
+.reader-damaged {
+  border-bottom: 1px solid var(--color-signal-blue);
+}
+
+/* The two controls. Styled from the palette rather than left to the platform,
+   because a default slider is the one control that would look like it came from
+   a different website. */
+.reader-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.reader-range::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--color-mist);
+}
+
+.reader-range::-moz-range-track {
+  height: 1px;
+  background: var(--color-mist);
+}
+
+.reader-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--color-paper);
+  border: 1px solid var(--color-graphite);
+}
+
+.reader-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--color-graphite);
+  border-radius: 50%;
+  background: var(--color-paper);
+}
+
+.reader-range:focus-visible {
+  outline: 2px solid var(--color-signal-blue);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+/* Available to a screen reader, absent from the page. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Full-bleed bands ---------------------------------------------------------- */
 /*
    Nothing below the hero had ever touched the edge of the viewport: every
@@ -700,32 +841,20 @@ body {
     will-change: transform;
   }
 
-  /* Figure 1 tells its story by doing the damage in front of you: the two
-     characters OCR gets wrong swap once the figure is on screen. */
-  .ocr-swap {
-    position: relative;
-    display: inline-block;
+  /* Figure 1 used to do its own damage on a timer: the two characters the
+     reader gets wrong faded from one to the other once the figure scrolled into
+     view. It no longer needs to. The figure is operable now, so the swap
+     happens when the reader turns the frame — which is the same demonstration
+     with the visitor's hand on it, and one fewer thing moving on its own. */
+
+  /* The frame eases to a new angle when a slider steps it, and follows the
+     pointer with no lag at all while a drag is in progress. */
+  .reader-frame {
+    transition: transform 0.18s ease-out;
   }
 
-  .ocr-swap > .ocr-damaged {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-  }
-
-  [data-reveal].is-visible .ocr-swap > .ocr-clean {
-    animation: fade-out 0.4s ease both;
-    animation-delay: var(--d, 0ms);
-  }
-
-  [data-reveal].is-visible .ocr-swap > .ocr-damaged {
-    animation: fade-in 0.4s ease both;
-    animation-delay: var(--d, 0ms);
-  }
-
-  @keyframes fade-out {
-    from { opacity: 1; }
-    to { opacity: 0; }
+  .reader-scene.is-dragging .reader-frame {
+    transition: none;
   }
 
   /* The circled arrow leans towards where it is taking you. */
