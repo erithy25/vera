@@ -42,10 +42,17 @@ import { settingsRepo } from "../lib/db";
 /* ===========================================================================
    Dry run
    ---------------------------------------------------------------------------
-   The gap this fills: someone about to record a demo does not know how to make
-   a recording Vera can actually read, and no amount of instructions would tell
-   them, because the answer depends on their machine, their recorder and their
-   font size.
+   Who this is for: a founder about to record the launch demo of their own
+   product, on the machine they built it on — which is the machine with every key
+   they have ever exported still sitting in its shell.
+
+   The gap it fills is two gaps. The small one is that not everybody knows which
+   keystroke opens the recorder or what the toolbar that appears means, so those
+   are shown rather than described, and the shell commands worth running first
+   are here to copy rather than to remember. The larger one is that no amount of
+   instructions could tell somebody whether the recording they are about to make
+   is one Vera can actually read, because that depends on their display, their
+   recorder and their font size.
 
    So it is not instructions. Vera hands over a key that is shaped exactly like
    a real one and opens nothing, you put it on screen and record ten seconds,
@@ -100,29 +107,106 @@ const Fact: React.FC<{
   </div>
 );
 
-/** A numbered step that resolves when it is done. */
-const Step: React.FC<{
-  n: number;
-  done?: boolean;
-  title: string;
-  children?: React.ReactNode;
-}> = ({ n, done, title, children }) => (
-  <div className="flex gap-4">
-    <span
-      className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center font-sans text-[11px] font-semibold ${
-        done
-          ? "border-emerald-600 text-emerald-600"
-          : "border-border-hairline text-text-muted"
-      }`}
-    >
-      {done ? <Check size={13} strokeWidth={2} /> : n}
-    </span>
-    <div className="flex flex-col gap-2 min-w-0 flex-1 pt-0.5">
-      <span className="font-sans text-[14px] font-medium text-text-primary">{title}</span>
-      {children}
+/**
+ * A command you copy and run.
+ *
+ * The copy button is the whole point: a founder reading this is thirty minutes
+ * from a launch and is not going to retype `printf '\033[3J'` correctly.
+ */
+const CommandLine: React.FC<{ command: string; label?: string }> = ({ command, label }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-border-hairline bg-bg-warm px-3 py-2">
+      <code className="font-mono text-[12px] text-text-primary flex-1 break-all select-all leading-relaxed">
+        {command}
+      </code>
+      <button
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(command);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1600);
+          } catch {
+            /* It is selectable; a failed copy does not deserve a dialog. */
+          }
+        }}
+        aria-label={`Copy ${label ?? "command"}`}
+        className="shrink-0 flex items-center gap-1.5 font-sans text-[12px] text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+      >
+        {copied ? <Check size={13} strokeWidth={1.8} /> : <Copy size={13} strokeWidth={1.5} />}
+        {copied ? "Copied" : "Copy"}
+      </button>
     </div>
-  </div>
-);
+  );
+};
+
+/**
+ * The Shift-Command-5 toolbar, drawn.
+ *
+ * "The fourth icon" is a sentence somebody has to decode while a launch is
+ * waiting. This is the same information as a picture, with the two that record
+ * video ringed — which is the actual question ("where do I click") answered in
+ * the form the question was asked.
+ *
+ * Drawn rather than screenshotted: a screenshot of macOS would be stale by the
+ * next release, would not follow the app's own palette, and would be the one
+ * asset in the product that came from somewhere else.
+ */
+const CaptureToolbar: React.FC = () => {
+  const stills = [
+    // Whole screen, one window, a dragged region — the three that take a photo.
+    <>
+      <rect x="5" y="6" width="14" height="11" rx="1.5" />
+      <path d="M5 14.5h14" />
+    </>,
+    <>
+      <rect x="4" y="5" width="12" height="9" rx="1.5" />
+      <rect x="8" y="9" width="12" height="9" rx="1.5" />
+    </>,
+    <>
+      <path d="M4 8V5h3M20 8V5h-3M4 15v3h3M20 15v3h-3" />
+    </>,
+  ];
+  return (
+    <div className="flex justify-center py-1">
+      <div className="inline-flex items-center gap-1 rounded-xl bg-text-primary/90 px-2.5 py-2 shadow-sm">
+        {stills.map((d, i) => (
+          <svg key={i} width="26" height="24" viewBox="0 0 24 24" fill="none"
+               stroke="rgba(255,255,255,0.45)" strokeWidth="1.3" strokeLinecap="round"
+               strokeLinejoin="round" aria-hidden="true">
+            {d}
+          </svg>
+        ))}
+        <span className="w-px h-4 bg-white/20 mx-1" aria-hidden="true" />
+        {/* The two that record video. */}
+        {[false, true].map((cropped, i) => (
+          <span key={i} className="relative inline-flex">
+            <span className="absolute -inset-0.5 rounded-lg border border-emerald-400" aria-hidden="true" />
+            <svg width="26" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff"
+                 strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {cropped ? (
+                <>
+                  <path d="M4 8V5h3M20 8V5h-3M4 15v3h3M20 15v3h-3" />
+                  <circle cx="12" cy="11.5" r="2.6" fill="#ffffff" stroke="none" />
+                </>
+              ) : (
+                <>
+                  <rect x="4" y="6" width="16" height="11" rx="1.5" />
+                  <circle cx="12" cy="11.5" r="2.6" fill="#ffffff" stroke="none" />
+                </>
+              )}
+            </svg>
+          </span>
+        ))}
+        <span className="w-px h-4 bg-white/20 mx-1" aria-hidden="true" />
+        <span className="font-sans text-[11px] text-white/50 px-1">Options</span>
+        <span className="font-sans text-[11px] text-white bg-white/15 rounded-md px-2 py-1">
+          Record
+        </span>
+      </div>
+    </div>
+  );
+};
 
 export const DryRun: React.FC = () => {
   const [env, setEnv] = useState<RecordingEnvironment | null>(null);
@@ -259,10 +343,9 @@ export const DryRun: React.FC = () => {
       <header className="flex flex-col gap-1 px-1">
         <h1 className="font-serif text-[32px] text-text-primary leading-tight">Dry run</h1>
         <p className="font-sans text-[14px] text-text-muted">
-          Ten seconds, before the take that matters. Vera gives you a key that opens
-          nothing, you record it, and the same engine that will read the real recording
-          reads this one — so you find out whether your setup produces something Vera
-          can read at all.
+          Everything between deciding to record your launch demo and having a file you
+          can publish. Clear the screen, take the recording, check it — with the
+          commands to copy, on the machine you are actually going to record.
         </p>
       </header>
 
@@ -325,79 +408,173 @@ export const DryRun: React.FC = () => {
         </div>
       )}
 
-      {/* --- The rehearsal ------------------------------------------------- */}
-      {phase === "idle" && (
-        <div className="card-style p-6 flex flex-col gap-6">
+      {/* --- 1. Prepare ---------------------------------------------------- */}
+      {phase === "idle" && env && env.prep.length > 0 && (
+        <div className="card-style p-6 flex flex-col gap-5">
           <div className="flex flex-col gap-1">
             <span className="font-serif text-[20px] text-text-primary">
-              Prove it works, once, on nothing.
+              1 · Clear the stage
             </span>
             <p className="font-sans text-[13px] text-text-muted leading-relaxed">
-              Below is a key shaped exactly like a real OpenAI project key. It is random
-              and it opens nothing — Vera generated it, nobody issued it. Put it on your
-              screen the way a real key would be, record ten seconds, and hand the file
-              back.
+              You are about to record the machine you built the product on — which is the
+              machine with every key you have ever exported still sitting in its shell. Run
+              these in the terminal you are going to record. Each one takes a second.
             </p>
           </div>
 
-          <div className="rounded-xl border border-border-hairline bg-bg-warm px-4 py-3 flex items-center gap-3">
-            <code className="font-mono text-[13px] text-text-primary flex-1 break-all select-all">
-              {canary}
-            </code>
-            <button
-              onClick={copyCanary}
-              className="shrink-0 flex items-center gap-1.5 font-sans text-[12px] text-text-muted hover:text-text-primary transition-colors cursor-pointer"
-            >
-              {copied ? <Check size={14} strokeWidth={1.8} /> : <Copy size={14} strokeWidth={1.5} />}
-              {copied ? "Copied" : "Copy"}
-            </button>
+          <div className="flex flex-col gap-5">
+            {env.prep.map((step, i) => (
+              <div key={step.title} className="flex gap-4">
+                <span className="shrink-0 w-6 h-6 rounded-full border border-border-hairline flex items-center justify-center font-sans text-[11px] font-semibold text-text-muted">
+                  {i + 1}
+                </span>
+                <div className="flex flex-col gap-2 min-w-0 flex-1 pt-0.5">
+                  <span className="font-sans text-[14px] font-medium text-text-primary">
+                    {step.title}
+                  </span>
+                  <p className="font-sans text-[12px] text-text-muted leading-relaxed">
+                    {step.why}
+                  </p>
+                  {step.command && <CommandLine command={step.command} label={step.title} />}
+                  {step.click && (
+                    <span className="font-sans text-[12px] text-text-primary">
+                      {step.click}
+                    </span>
+                  )}
+                  {step.undo && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-sans text-[11px] text-text-faint shrink-0">
+                        Afterwards
+                      </span>
+                      <code className="font-mono text-[11px] text-text-faint break-all select-all">
+                        {step.undo}
+                      </code>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* --- 2. Record ----------------------------------------------------- */}
+      {phase === "idle" && (
+        <div className="card-style p-6 flex flex-col gap-5">
+          <div className="flex flex-col gap-1">
+            <span className="font-serif text-[20px] text-text-primary">2 · Record it</span>
+            <p className="font-sans text-[13px] text-text-muted leading-relaxed">
+              Two ways. Both produce the same file.
+            </p>
           </div>
 
-          <div className="flex flex-col gap-5">
-            <Step n={1} done={recorderOpened} title="Open the recorder">
-              <div className="flex items-center gap-3 flex-wrap">
-                <button
-                  onClick={() => {
-                    openScreenRecorder().catch(() => {});
-                    setRecorderOpened(true);
-                  }}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border-hairline font-sans text-[13px] text-text-primary hover:bg-active-hover transition-colors cursor-pointer"
-                >
-                  <Video size={14} strokeWidth={1.5} />
-                  Open it for me
-                </button>
-                <span className="font-sans text-[12px] text-text-faint">
-                  or press Shift-Command-5 yourself
-                </span>
-              </div>
-            </Step>
-
-            <Step n={2} title="Record about ten seconds">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2.5">
+              <span className="font-sans text-[13px] font-medium text-text-primary">
+                Press Shift-Command-5
+              </span>
               <p className="font-sans text-[12px] text-text-muted leading-relaxed">
-                Paste the key somewhere it would normally appear — a terminal, an editor,
-                a browser console — at the font size you will actually be using. Then stop
-                the recording.
+                A small toolbar appears at the bottom of the screen. The two right-hand
+                icons are the video ones — the fourth records the whole screen, the fifth
+                lets you drag a box. Pick one, press Record, and stop it from the
+                {"\u00A0"}■{"\u00A0"}in the menu bar.
               </p>
-            </Step>
-
-            <Step n={3} title="Hand the file back">
+              <CaptureToolbar />
               <button
-                onClick={chooseFile}
-                className={`rounded-xl border border-dashed border-border-hairline py-8 px-6 flex flex-col items-center gap-2 transition-all duration-200 cursor-pointer hover:bg-active-hover/40 ${
-                  dragging ? "border-text-muted bg-active-hover/60" : ""
-                }`}
+                onClick={() => {
+                  openScreenRecorder().catch(() => {});
+                  setRecorderOpened(true);
+                }}
+                className="self-start flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border-hairline font-sans text-[13px] text-text-primary hover:bg-active-hover transition-colors cursor-pointer"
               >
-                <Clapperboard size={26} strokeWidth={1.25} className="text-text-muted" />
-                <span className="font-sans text-[13px] text-text-primary">
-                  {dragging ? "Drop it here" : "Drop your dry run here, or click to choose it"}
-                </span>
-                {env?.save_location_known && (
-                  <span className="font-sans text-[12px] text-text-faint">
-                    It will be in {shortenHome(env.save_location)}
-                  </span>
-                )}
+                <Video size={14} strokeWidth={1.5} />
+                {recorderOpened ? "Open it again" : "Open it for me"}
               </button>
-            </Step>
+            </div>
+
+            <hr className="border-t border-border-hairline" />
+
+            <div className="flex flex-col gap-2.5">
+              <span className="font-sans text-[13px] font-medium text-text-primary">
+                Or from the terminal
+              </span>
+              <p className="font-sans text-[12px] text-text-muted leading-relaxed">
+                Starts immediately and stops on Control-C. The first time, macOS asks your
+                terminal for Screen Recording permission — which is why this is the second
+                option and not the first.
+              </p>
+              <CommandLine command={env?.record_command ?? "screencapture -v ~/Desktop/launch-demo.mov"} label="record command" />
+            </div>
+          </div>
+
+          {env?.save_location_known && (
+            <div className="flex items-center gap-2 pt-1">
+              <span className="font-sans text-[12px] text-text-muted">
+                Either way it lands in {shortenHome(env.save_location)}.
+              </span>
+              <button
+                onClick={() => revealFolder(env.save_location).catch(() => {})}
+                className="flex items-center gap-1 font-sans text-[12px] text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+              >
+                <FolderOpen size={13} strokeWidth={1.5} />
+                Show me
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* --- 3. Check it --------------------------------------------------- */}
+      {phase === "idle" && (
+        <div className="card-style p-6 flex flex-col gap-5">
+          <div className="flex flex-col gap-1">
+            <span className="font-serif text-[20px] text-text-primary">3 · Check it</span>
+            <p className="font-sans text-[13px] text-text-muted leading-relaxed">
+              Drop the recording in and Vera reads it. That works for the real take — and
+              for a ten-second rehearsal, which is the part worth doing first.
+            </p>
+          </div>
+
+          <button
+            onClick={chooseFile}
+            className={`rounded-xl border border-dashed border-border-hairline py-10 px-6 flex flex-col items-center gap-2 transition-all duration-200 cursor-pointer hover:bg-active-hover/40 ${
+              dragging ? "border-text-muted bg-active-hover/60" : ""
+            }`}
+          >
+            <Clapperboard size={26} strokeWidth={1.25} className="text-text-muted" />
+            <span className="font-sans text-[13px] text-text-primary">
+              {dragging ? "Drop it here" : "Drop your recording here, or click to choose it"}
+            </span>
+            <span className="font-sans text-[12px] text-text-faint">
+              {VIDEO_EXTENSIONS.join(" · ")} · nothing is uploaded
+            </span>
+          </button>
+
+          <div className="rounded-xl border border-border-hairline bg-bg-warm p-4 flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <span className="font-sans text-[13px] font-medium text-text-primary">
+                Do the rehearsal first — it takes ten seconds
+              </span>
+              <p className="font-sans text-[12px] text-text-muted leading-relaxed">
+                Put this key on screen, record ten seconds, drop that in. It is shaped
+                exactly like a real OpenAI project key and opens nothing — Vera generated
+                it, nobody issued it. If Vera finds it, your recorder and your font size
+                demonstrably produce something it can read. If it does not, you have found
+                that out on a rehearsal instead of on the launch video.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <code className="font-mono text-[13px] text-text-primary flex-1 break-all select-all">
+                {canary}
+              </code>
+              <button
+                onClick={copyCanary}
+                className="shrink-0 flex items-center gap-1.5 font-sans text-[12px] text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+              >
+                {copied ? <Check size={14} strokeWidth={1.8} /> : <Copy size={14} strokeWidth={1.5} />}
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
           </div>
         </div>
       )}

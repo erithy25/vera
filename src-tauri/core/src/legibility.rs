@@ -185,6 +185,22 @@ pub fn evaluate(plan: RecordingPlan) -> PlanVerdict {
     }
 }
 
+/// The smallest font size, in points, that is still comfortable on a display
+/// with this backing scale.
+///
+/// This is the number a guide actually needs. `COMFORTABLE_PX` is in device
+/// pixels, and nobody sets their terminal in device pixels — they set it in
+/// points, and a Retina display doubles them. It is also the source of the one
+/// genuinely counter-intuitive thing the measurements say: on a 2x Mac the floor
+/// is around 8pt, which is smaller than anyone actually uses. On such a machine
+/// the font is almost never what loses a credential. The export is.
+pub fn smallest_comfortable_font_points(display_scale: f64) -> Option<f64> {
+    if !(display_scale > 0.0) || !display_scale.is_finite() {
+        return None;
+    }
+    Some((COMFORTABLE_PX / display_scale * 10.0).ceil() / 10.0)
+}
+
 /// The largest export height that still keeps the text comfortable.
 ///
 /// This is the actionable half: telling someone their plan is bad without
@@ -341,6 +357,22 @@ mod tests {
             evaluate(RecordingPlan { export_height_px: safe - 1, ..p }).legibility,
             Legibility::Marginal
         );
+    }
+
+    #[test]
+    fn the_font_floor_is_stated_in_the_units_people_actually_set() {
+        // A Retina Mac doubles points into device pixels, so the floor halves.
+        let retina = smallest_comfortable_font_points(2.0).unwrap();
+        assert_eq!(retina, 7.5);
+        assert_eq!(
+            evaluate(plan(retina, 2.0, 2234, 2234)).legibility,
+            Legibility::Comfortable
+        );
+        // An external 1080p monitor has no such luxury.
+        assert_eq!(smallest_comfortable_font_points(1.0).unwrap(), 15.0);
+        // A failed display probe must not produce a number to obey.
+        assert!(smallest_comfortable_font_points(0.0).is_none());
+        assert!(smallest_comfortable_font_points(f64::NAN).is_none());
     }
 
     #[test]

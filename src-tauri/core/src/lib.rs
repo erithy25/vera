@@ -50,7 +50,7 @@ pub mod schema;
 
 pub use detect::{detect_in_text, detect_with_report, DetectionReport, Finding, Rejected};
 pub use legibility::{
-    evaluate as evaluate_plan, smallest_safe_export_height, Legibility, PlanVerdict,
+    evaluate as evaluate_plan, smallest_comfortable_font_points, smallest_safe_export_height, Legibility, PlanVerdict,
     RecordingPlan, DRY_RUN_CANARY,
 };
 pub use patterns::{Severity, PATTERNS};

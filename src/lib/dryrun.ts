@@ -17,6 +17,16 @@ export interface Recorder {
   note: string;
 }
 
+/** One thing to do before recording: either a command to copy, or a place to click. */
+export interface PrepStep {
+  title: string;
+  why: string;
+  command: string | null;
+  /** How to put it back, where leaving it on would be a nuisance. */
+  undo: string | null;
+  click: string | null;
+}
+
 export interface RecordingEnvironment {
   recorders: Recorder[];
   /** Absolute path. Empty when the probe could not answer. */
@@ -26,6 +36,10 @@ export interface RecordingEnvironment {
   display_width: number;
   display_height: number;
   display_scale: number;
+  /** Null when the display probe failed — show no number rather than a plausible one. */
+  min_font_points: number | null;
+  prep: PrepStep[];
+  record_command: string;
 }
 
 export type Legibility = "comfortable" | "marginal" | "unreadable";

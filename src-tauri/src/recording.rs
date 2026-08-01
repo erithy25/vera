@@ -133,6 +133,119 @@ pub fn resolve_save_location(raw: Option<&str>, home: &str) -> (String, bool) {
     }
 }
 
+/// One thing to do before recording.
+///
+/// Either it is a command you can copy, or it is somewhere to click — never
+/// both, and never a command invented to make a click look technical.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PrepStep {
+    pub title: String,
+    /// Why it matters, in one sentence. The steps without a reason get skipped.
+    pub why: String,
+    pub command: Option<String>,
+    /// How to undo it afterwards, where leaving it on would be a nuisance.
+    pub undo: Option<String>,
+    pub click: Option<String>,
+}
+
+/// Wrap a path for a shell so a space or a quote in it cannot end the argument.
+///
+/// `/Users/Erik Thye/Desktop` is an ordinary macOS path and an unquoted command
+/// containing it records to `/Users/Erik` instead — or, with the wrong
+/// character, runs something nobody typed.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The steps, in the order they are worth doing.
+///
+/// Written for the job this screen exists for: a founder about to record the
+/// launch demo of their own product, on the machine they built it on — which is
+/// the machine with every key they have ever exported still in its shell.
+pub fn prep_steps(min_font_points: Option<f64>) -> Vec<PrepStep> {
+    let mut steps = vec![
+        PrepStep {
+            title: "Wipe the scrollback".into(),
+            why: "Command-K clears what you can see. Scrolling up still shows the last hour of \
+                  your work, and a demo always ends with someone scrolling up."
+                .into(),
+            command: Some("clear && printf '\\033[3J'".into()),
+            undo: None,
+            click: None,
+        },
+        PrepStep {
+            title: "See what is still exposed".into(),
+            why: "If this prints anything, that is what your audience sees the moment you run \
+                  env, printenv, or any script that echoes its own configuration."
+                .into(),
+            command: Some("env | grep -iE 'key|token|secret|password|api'".into()),
+            undo: None,
+            click: None,
+        },
+        PrepStep {
+            title: "Record from a shell that has none of it".into(),
+            why: "env -i empties the environment and -f skips your dotfiles, so nothing you \
+                  exported earlier is one command away from the recording."
+                .into(),
+            command: Some(
+                r#"env -i HOME="$HOME" PATH="$PATH" TERM="$TERM" /bin/zsh -f"#.into(),
+            ),
+            undo: Some("exit".into()),
+            click: None,
+        },
+        PrepStep {
+            title: "Hide the desktop".into(),
+            why: "Icons on the desktop are read by the scanner like anything else, and a \
+                  filename can be as telling as a key."
+                .into(),
+            command: Some(
+                "defaults write com.apple.finder CreateDesktop false && killall Finder".into(),
+            ),
+            undo: Some(
+                "defaults write com.apple.finder CreateDesktop true && killall Finder".into(),
+            ),
+            click: None,
+        },
+        PrepStep {
+            title: "Silence notifications".into(),
+            why: "A message preview is the one thing you cannot edit around afterwards — it \
+                  lands on top of whatever you were showing."
+                .into(),
+            command: None,
+            undo: None,
+            click: Some("Control Centre \u{25B8} Focus \u{25B8} Do Not Disturb".into()),
+        },
+    ];
+
+    // Only claim a number when the display probe answered.
+    if let Some(points) = min_font_points {
+        steps.push(PrepStep {
+            title: format!("Set the text to at least {points}pt"),
+            why: "Measured, not guessed: below this the reader starts dropping characters, and \
+                  a scan of the result would come back clean whether or not anything was there."
+                .into(),
+            command: None,
+            undo: None,
+            click: Some("Terminal \u{25B8} Settings \u{25B8} Profiles \u{25B8} Font".into()),
+        });
+    }
+    steps
+}
+
+/// The command that records the screen without leaving the terminal.
+///
+/// Offered as the alternative rather than the main route: it needs Screen
+/// Recording permission for the terminal app the first time, and that prompt in
+/// the middle of a launch-day recording is worse than pressing a keystroke.
+pub fn record_command(save_location: &str) -> String {
+    let target = if save_location.is_empty() {
+        "~/Desktop/launch-demo.mov".to_string()
+    } else {
+        shell_quote(&format!("{save_location}/launch-demo.mov"))
+    };
+    format!("screencapture -v {target}")
+}
+
 /// Everything the guidance screen is allowed to claim about this Mac.
 #[derive(Debug, Clone, Serialize)]
 pub struct RecordingEnvironment {
@@ -146,6 +259,12 @@ pub struct RecordingEnvironment {
     pub display_width: u32,
     pub display_height: u32,
     pub display_scale: f64,
+    /// The smallest font size still comfortable on this display, from the
+    /// measured bands. `None` when the display probe failed — in which case the
+    /// screen shows no number rather than a plausible one.
+    pub min_font_points: Option<f64>,
+    pub prep: Vec<PrepStep>,
+    pub record_command: String,
 }
 
 fn screencapture_location() -> Option<String> {
@@ -180,13 +299,18 @@ pub fn recording_environment(app: tauri::AppHandle) -> RecordingEnvironment {
         }
     };
 
+    let min_font_points = vera_core::smallest_comfortable_font_points(display_scale);
+
     RecordingEnvironment {
         recorders: detect_recorders(|p| Path::new(p).exists()),
+        record_command: record_command(if save_location_known { &save_location } else { "" }),
+        prep: prep_steps(min_font_points),
         save_location,
         save_location_known,
         display_width,
         display_height,
         display_scale,
+        min_font_points,
     }
 }
 
@@ -270,6 +394,63 @@ pub struct RecordingPlanReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_with_a_space_in_it_cannot_break_the_record_command() {
+        // /Users/Erik Thye/Desktop is an ordinary macOS path. Unquoted, the
+        // command records to /Users/Erik instead.
+        let cmd = record_command("/Users/Erik Thye/Desktop");
+        assert_eq!(cmd, "screencapture -v '/Users/Erik Thye/Desktop/launch-demo.mov'");
+    }
+
+    #[test]
+    fn a_quote_in_a_path_cannot_end_the_argument() {
+        let cmd = record_command("/Users/o'brien/Desktop");
+        assert!(cmd.contains(r"'/Users/o'\''brien/Desktop/launch-demo.mov'"), "{cmd}");
+    }
+
+    #[test]
+    fn an_unknown_save_location_falls_back_to_something_true() {
+        // Not a guessed absolute path: the tilde form is correct on every Mac.
+        assert_eq!(record_command(""), "screencapture -v ~/Desktop/launch-demo.mov");
+    }
+
+    #[test]
+    fn every_step_is_either_a_command_or_a_click_and_always_has_a_reason() {
+        for step in prep_steps(Some(7.5)) {
+            assert!(!step.why.trim().is_empty(), "{} has no reason", step.title);
+            assert!(
+                step.command.is_some() ^ step.click.is_some(),
+                "{} is both a command and a click, or neither",
+                step.title
+            );
+            // A step that changes the machine has to say how to change it back.
+            if step.title.contains("Hide the desktop") {
+                assert!(step.undo.is_some(), "hiding the desktop must be undoable");
+            }
+        }
+    }
+
+    #[test]
+    fn no_font_size_is_claimed_when_the_display_probe_failed() {
+        let with = prep_steps(Some(7.5));
+        let without = prep_steps(None);
+        assert!(with.iter().any(|s| s.title.contains("7.5pt")));
+        assert!(
+            !without.iter().any(|s| s.title.contains("pt")),
+            "a failed probe must not produce a number to obey"
+        );
+        assert_eq!(with.len(), without.len() + 1);
+    }
+
+    #[test]
+    fn the_scrollback_command_clears_the_buffer_not_just_the_screen() {
+        // `clear` alone leaves everything one scroll away; the 3J is the part
+        // that matters and the part people do not know about.
+        let step = prep_steps(None).into_iter().next().unwrap();
+        let cmd = step.command.unwrap();
+        assert!(cmd.contains("[3J"), "{cmd}");
+    }
 
     #[test]
     fn built_ins_are_never_reported_as_missing() {
